@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from jose import JWTError
 
@@ -9,7 +9,7 @@ from ..database import get_db
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 # Ye batata hai FastAPI ko ki token kahan se milega (Swagger docs me "Authorize" button ke liye)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+security_scheme = HTTPBearer()
 
 
 @router.post("/signup", response_model=schemas.UserOut)
@@ -33,19 +33,19 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=schemas.Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Swagger UI ka login form "username" field bhejta hai -- hum usme email daalenge
-    user = db.query(models.User).filter(models.User.email == form_data.username).first()
-    if not user or not auth.verify_password(form_data.password, user.hashed_password):
+def login(login_data: schemas.LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == login_data.email).first()
+    if not user or not auth.verify_password(login_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Email ya password galat hai")
 
     token = auth.create_access_token(data={"sub": str(user.id)})
     return {"access_token": token, "token_type": "bearer"}
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_scheme), db: Session = Depends(get_db)) -> models.User:
     """Ye function kisi bhi protected route me use karo taaki pata chale
     abhi kaunsa user login hai (token ke through)."""
+    token = credentials.credentials
     credentials_exception = HTTPException(status_code=401, detail="Login invalid ya expire ho gaya hai")
     try:
         payload = auth.decode_access_token(token)
