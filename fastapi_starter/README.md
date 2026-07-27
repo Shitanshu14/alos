@@ -1,11 +1,32 @@
 # Mera Backend API — FastAPI Starter
 
 ## Ye kya hai?
-Ye ek ready-made FastAPI backend hai jisme already ye cheezein ban chuki hain:
-- User signup/login (JWT token ke saath)
-- Sample CRUD API (Items) — isko dekh ke tum apna khud ka data model bana sakte ho
-- SQLite database (koi extra setup nahi chahiye, file khud ban jaati hai)
-- CORS enabled — taaki tumhara Stitch wala frontend isse baat kar sake
+Ye ek production-ready FastAPI backend hai jisme ye sab already ban chuka hai:
+
+**Auth**
+- Signup/login with JWT — access token (15 min) + refresh token (7 din)
+- `POST /auth/refresh` — access token renew karo (refresh token rotate hota hai)
+- `POST /auth/logout` — refresh token revoke karo
+- `POST /auth/forgot-password` + `POST /auth/reset-password`
+- `POST /auth/verify-email` — signup ke baad verification email jaati hai
+- Duplicate email/phone → `409 Conflict` (500 nahi)
+- Password policy: min 8 chars, upper+lower+number+special char
+- Login par rate limiting (default 5/minute) brute-force se bachne ke liye
+
+**Items API**
+- Search: `GET /items?search=laptop`
+- Sorting: `GET /items?sort=created_at` ya `?sort=-title` (`-` = descending)
+- Filtering: `?owner_id=`, `?created_after=`, `?created_before=`
+
+**Security / Production**
+- Security headers (X-Frame-Options, CSP, X-Content-Type-Options, Referrer-Policy)
+- Optional HTTPS redirect (`FORCE_HTTPS=true` in `.env`)
+- CORS origins ab `.env` se configurable hain (wildcard `*` production me warning deta hai)
+- `GET /health` — health check endpoint (DB connectivity bhi check karta hai)
+- Request logging
+- Saari secrets `.env` file me — code me hardcoded nahi
+
+- SQLite database by default (Postgres me switch karna ho to `.env` me `DATABASE_URL` badlo)
 
 ## Step 1: Python install check karo
 Terminal me likho:
@@ -27,7 +48,16 @@ Activate karo:
 pip install -r requirements.txt
 ```
 
-## Step 4: Server chalao
+## Step 4: .env file banao
+```
+cp .env.example .env
+```
+Kam se kam `SECRET_KEY` ko ek random strong value se badal do. Baaki sab defaults
+dev ke liye theek hain. Agar real emails bhejni hain (verification/reset), to
+`SMTP_*` values bhi bharo — nahi to emails console/log me print ho jaayengi
+(dev mode, testing ke liye kaafi hai).
+
+## Step 5: Server chalao
 ```
 uvicorn app.main:app --reload
 ```
@@ -49,12 +79,16 @@ Ab browser me jaake ye kholo:
      "password": "mypassword"
    }
    ```
-2. `/auth/login` expand karo → "Try it out" → `username` field me email daalo (e.g. `ravi@test.com`)
-   aur `password` daalo → Execute karo. Response me `access_token` milega.
-3. Us token ko copy karo. Ab page ke top-right me **"Authorize"** button dabao,
+2. `/auth/login` expand karo → "Try it out" → email/password bharo → Execute karo.
+   Response me `access_token`, `refresh_token`, aur `expires_in` (seconds) milega.
+3. `access_token` ko copy karo. Ab page ke top-right me **"Authorize"** button dabao,
    token paste karo, Authorize karo.
 4. Ab `/auth/me` call karo — ye login kiye hue user ki details dikhayega.
-5. `/items/` se items create/read/update/delete karo
+5. `/items/` se items create/read/update/delete karo — search/sort/filter bhi try karo
+   (e.g. `/items/?search=laptop&sort=-created_at`)
+6. Access token expire hone ke baad (15 min), `/auth/refresh` ko apna `refresh_token`
+   bhej ke naya access token le lo — dobara login karne ki zaroorat nahi.
+7. `/auth/logout` ko refresh token bhejo taaki wo revoke ho jaaye.
 
 ## Agla step: Stitch frontend se connect karna
 Jo bhi UI Stitch me banaya hai, usme jahan bhi button/form hai, wahan se

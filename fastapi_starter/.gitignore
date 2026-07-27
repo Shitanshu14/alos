@@ -6,6 +6,9 @@ venv/
 __pycache__/
 *.pyc
 
+# Environment variables (secrets - kabhi commit mat karna)
+.env
+
 # Database
 app.db
 
