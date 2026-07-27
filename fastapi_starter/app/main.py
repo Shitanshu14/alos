@@ -46,13 +46,29 @@ if settings.FORCE_HTTPS:
 
 
 # ---------- Security headers ----------
+# /docs aur /redoc FastAPI ke Swagger UI CDN se scripts/styles load karte hain,
+# isliye unke liye CSP thoda relax rakhi hai. Baaki saare endpoints pe strict rehta hai.
+DOCS_PATHS = {"/docs", "/redoc", "/openapi.json"}
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+
+    if request.url.path in DOCS_PATHS:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
+            "img-src 'self' data: fastapi.tiangolo.com; "
+            "font-src 'self' data:;"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+
     if settings.FORCE_HTTPS:
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
     return response
