@@ -35,6 +35,7 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
         email=user.email,
         phone=user.phone,
         hashed_password=auth.hash_password(user.password),
+        role=user.role,
     )
     db.add(new_user)
     db.commit()

@@ -13,6 +13,7 @@ class User(Base):
     phone = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
+    role = Column(String, default="user", nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.datetime.utcnow,
@@ -67,3 +68,18 @@ class EmailVerificationToken(Base):
     expires_at = Column(DateTime, nullable=False)
     used = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class ErrorLog(Base):
+    """Har unhandled exception (crash) ki entry yahan save hoti hai —
+    global exception handler (main.py) isme automatically likhta hai."""
+    __tablename__ = "error_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    path = Column(String, nullable=False)          # kaunsa endpoint tha, e.g. /auth/signup
+    method = Column(String, nullable=False)         # GET / POST / etc.
+    error_type = Column(String, nullable=False)     # exception class ka naam, e.g. ValueError
+    error_message = Column(String, nullable=False)  # str(exception)
+    traceback = Column(String, nullable=True)        # poora traceback (debugging ke liye)
+    client_ip = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True, nullable=False)

@@ -10,6 +10,10 @@ PASSWORD_REGEX_LOWER = re.compile(r"[a-z]")
 PASSWORD_REGEX_DIGIT = re.compile(r"\d")
 PASSWORD_REGEX_SPECIAL = re.compile(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]")
 
+# Registration ke waqt sirf ye roles allow honge (security: koi bhi khud ko
+# "admin" bana ke register na kar sake, isliye whitelist rakhi hai)
+ALLOWED_ROLES = {"user", "admin", "manager"}
+
 
 def validate_password_strength(password: str) -> str:
     """Password policy: min 8 chars, kam se kam ek uppercase, lowercase,
@@ -33,11 +37,20 @@ class UserCreate(BaseModel):
     email: EmailStr
     phone: str
     password: str
+    role: str = "user"
 
     @field_validator("password")
     @classmethod
     def check_password(cls, v: str) -> str:
         return validate_password_strength(v)
+
+    @field_validator("role")
+    @classmethod
+    def check_role(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ALLOWED_ROLES:
+            raise ValueError(f"Role sirf inme se ek hona chahiye: {', '.join(sorted(ALLOWED_ROLES))}")
+        return v
 
 
 class UserOut(BaseModel):
@@ -45,6 +58,7 @@ class UserOut(BaseModel):
     full_name: str
     email: EmailStr
     phone: str
+    role: str
     is_verified: bool
     created_at: datetime.datetime
 

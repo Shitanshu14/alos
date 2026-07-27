@@ -1,4 +1,5 @@
 import logging
+import traceback
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -35,6 +36,41 @@ def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
         content={"detail": "Too many requests. Thoda ruk ke phir try karo."},
+    )
+
+
+# ---------- Global exception handling (crash -> error_logs table) ----------
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Koi bhi unhandled exception (crash) yahan pakda jaata hai.
+    Client ko generic 500 message milta hai, aur poori detail
+    (endpoint, method, error, traceback) error_logs table me save ho jaati hai."""
+    tb_str = traceback.format_exc()
+    client_ip = request.client.host if request.client else None
+
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+
+    db = SessionLocal()
+    try:
+        db.add(models.ErrorLog(
+            path=request.url.path,
+            method=request.method,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            traceback=tb_str,
+            client_ip=client_ip,
+        ))
+        db.commit()
+    except Exception:
+        # Agar error log save karte waqt bhi kuch fail ho jaaye, to kam se kam
+        # ye original crash ke upar dubara crash na de - bas log kar do
+        logger.exception("Error log ko database me save nahi kar paaye")
+    finally:
+        db.close()
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Kuch galat ho gaya. Hamari team ko notify kar diya gaya hai."},
     )
 
 
