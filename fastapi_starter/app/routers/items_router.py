@@ -28,7 +28,7 @@ def create_item(item: schemas.ItemCreate, db: Session = Depends(get_db), current
 def list_items(
     skip: int = 0,
     limit: int = 10,
-    search: Optional[str] = Query(None, description="Title/description me search karo, e.g. ?search=laptop"),
+    search: Optional[str] = Query(None, description="Search in title/description, e.g. ?search=laptop"),
     sort: Optional[str] = Query(
         None,
         description="Sort field. Options: created_at, -created_at, title, -title, updated_at, -updated_at "
@@ -42,9 +42,9 @@ def list_items(
 ):
     query = db.query(models.Item).filter(models.Item.owner_id == current_user.id)
 
-    # NOTE: owner_id filter yahan sirf current user ke items tak restrict rehta hai
-    # (har user sirf apna data dekh sakta hai) - agar owner_id diya gaya hai to
-    # bas current user ke apne id se match hona chahiye, warna empty result.
+    # NOTE: this owner_id filter is restricted to only the current user's items
+    # (each user can only see their own data) - if owner_id is provided, it
+    # must match the current user's own id, otherwise the result is empty.
     if owner_id is not None:
         query = query.filter(models.Item.owner_id == owner_id)
 

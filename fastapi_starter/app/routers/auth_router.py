@@ -1,8 +1,10 @@
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, OperationalError
 from jose import JWTError
 
 from .. import models, schemas, auth
@@ -11,9 +13,11 @@ from ..config import settings
 from ..rate_limiter import limiter
 from ..email_utils import send_verification_email, send_password_reset_email
 
+logger = logging.getLogger("app.auth")
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# Ye batata hai FastAPI ko ki token kahan se milega (Swagger docs me "Authorize" button ke liye)
+# Tells FastAPI where to get the token from (for the "Authorize" button in Swagger docs)
 security_scheme = HTTPBearer()
 
 
@@ -24,11 +28,11 @@ security_scheme = HTTPBearer()
 def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
     existing_email = db.query(models.User).filter(models.User.email == user.email).first()
     if existing_email:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ye email pehle se registered hai")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This email is already registered")
 
     existing_phone = db.query(models.User).filter(models.User.phone == user.phone).first()
     if existing_phone:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ye phone number pehle se registered hai")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This phone number is already registered")
 
     new_user = models.User(
         full_name=user.full_name,
@@ -38,21 +42,45 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
         role=user.role,
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This email or phone number is already registered",
+        )
+    except OperationalError:
+        db.rollback()
+        logger.exception("Database was unreachable during signup")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is temporarily unavailable. Please try again in a moment.",
+        )
     db.refresh(new_user)
 
-    # Email verification token banao aur "verification mail" bhejo
-    verify_token = auth.generate_secure_token()
-    db.add(models.EmailVerificationToken(
-        token=verify_token,
-        user_id=new_user.id,
-        expires_at=auth.verify_token_expiry(),
-    ))
-    db.commit()
-    send_verification_email(new_user.email, verify_token)
+    try:
+        verify_token = auth.generate_secure_token()
+        db.add(models.EmailVerificationToken(
+            token=verify_token,
+            user_id=new_user.id,
+            expires_at=auth.verify_token_expiry(),
+        ))
+        db.commit()
+        email_sent = send_verification_email(new_user.email, verify_token)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to create/send email verification token for user_id=%s", new_user.id)
+        email_sent = False
+
+    if email_sent:
+        message = "Signup successful. Please check your inbox to verify your email."
+    else:
+        # SMTP isn't configured, so no email actually went out — don't claim it did.
+        message = "Signup successful. Email sending isn't configured yet, so no verification email was sent."
 
     return {
-        "message": "Signup successful. Apna email verify karne ke liye inbox check karo.",
+        "message": message,
         "user": new_user,
     }
 
@@ -65,7 +93,7 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
 def login(request: Request, login_data: schemas.LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.email == login_data.email).first()
     if not user or not auth.verify_password(login_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email ya password galat hai")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
 
     return _issue_tokens(user, db)
 
@@ -98,7 +126,7 @@ def refresh_token(payload: schemas.RefreshRequest, db: Session = Depends(get_db)
         models.RefreshToken.token == payload.refresh_token
     ).first()
 
-    invalid_exc = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token invalid ya expire ho gaya hai")
+    invalid_exc = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token is invalid or has expired")
 
     if not token_row or token_row.revoked or token_row.expires_at < datetime.utcnow():
         raise invalid_exc
@@ -107,7 +135,7 @@ def refresh_token(payload: schemas.RefreshRequest, db: Session = Depends(get_db)
     if not user:
         raise invalid_exc
 
-    # Rotation: purana refresh token revoke karke naya issue karo (replay attack se bachne ke liye)
+    # Rotation: revoke the old refresh token and issue a new one (protects against replay attacks)
     token_row.revoked = True
     db.commit()
 
@@ -125,8 +153,8 @@ def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
     if token_row:
         token_row.revoked = True
         db.commit()
-    # Chahe token mile ya na mile, hamesha success return karo (idempotent + no info leak)
-    return {"message": "Logout ho gaya"}
+    # Always return success whether or not the token was found (idempotent + no info leak)
+    return {"message": "Logged out successfully"}
 
 
 # =========================================================
@@ -134,12 +162,17 @@ def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
 # =========================================================
 @router.post("/forgot-password", response_model=schemas.MessageResponse)
 def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
-    generic_message = {"message": "Agar ye email registered hai, to reset link bhej diya gaya hai"}
+    # Whether SMTP is configured is a global setting (not per-user), so checking it
+    # here doesn't leak whether this particular email is registered.
+    if settings.SMTP_HOST:
+        generic_message = {"message": "If this email is registered, a reset link has been sent"}
+    else:
+        generic_message = {"message": "Email sending isn't configured yet, so no reset link was sent"}
 
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if not user:
-        # Jaan-boojh kar same response - taaki koi ye pata na laga sake ki
-        # kaunse emails registered hain (user enumeration se bachne ke liye)
+        # Deliberately return the same response either way - so no one can tell
+        # which emails are registered (avoids user enumeration).
         return generic_message
 
     reset_token = auth.generate_secure_token()
@@ -163,7 +196,7 @@ def reset_password(payload: schemas.ResetPasswordRequest, db: Session = Depends(
         models.PasswordResetToken.token == payload.token
     ).first()
 
-    invalid_exc = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset token invalid ya expire ho gaya hai")
+    invalid_exc = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset token is invalid or has expired")
 
     if not token_row or token_row.used or token_row.expires_at < datetime.utcnow():
         raise invalid_exc
@@ -175,13 +208,13 @@ def reset_password(payload: schemas.ResetPasswordRequest, db: Session = Depends(
     user.hashed_password = auth.hash_password(payload.new_password)
     token_row.used = True
 
-    # Password change hone par saare existing refresh tokens revoke kar do (security best practice)
+    # Revoke all existing refresh tokens when the password changes (security best practice)
     db.query(models.RefreshToken).filter(
         models.RefreshToken.user_id == user.id, models.RefreshToken.revoked == False  # noqa: E712
     ).update({"revoked": True})
 
     db.commit()
-    return {"message": "Password reset ho gaya. Ab naye password se login karo"}
+    return {"message": "Password reset successful. Please log in with your new password"}
 
 
 # =========================================================
@@ -193,7 +226,7 @@ def verify_email(payload: schemas.VerifyEmailRequest, db: Session = Depends(get_
         models.EmailVerificationToken.token == payload.token
     ).first()
 
-    invalid_exc = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification token invalid ya expire ho gaya hai")
+    invalid_exc = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification token is invalid or has expired")
 
     if not token_row or token_row.used or token_row.expires_at < datetime.utcnow():
         raise invalid_exc
@@ -206,17 +239,17 @@ def verify_email(payload: schemas.VerifyEmailRequest, db: Session = Depends(get_
     token_row.used = True
     db.commit()
 
-    return {"message": "Email verify ho gaya"}
+    return {"message": "Email verified successfully"}
 
 
 # =========================================================
 # CURRENT USER (existing protected-route dependency)
 # =========================================================
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_scheme), db: Session = Depends(get_db)) -> models.User:
-    """Ye function kisi bhi protected route me use karo taaki pata chale
-    abhi kaunsa user login hai (token ke through)."""
+    """Use this function in any protected route to determine which
+    user is currently logged in (via the token)."""
     token = credentials.credentials
-    credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login invalid ya expire ho gaya hai")
+    credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login is invalid or has expired")
     try:
         payload = auth.decode_access_token(token)
         if payload.get("type") != "access":
@@ -235,5 +268,5 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
 @router.get("/me", response_model=schemas.UserOut)
 def read_own_profile(current_user: models.User = Depends(get_current_user)):
-    """Login karne ke baad ye endpoint call karke apni profile check kar sakte ho."""
+    """After logging in, call this endpoint to check your own profile."""
     return current_user

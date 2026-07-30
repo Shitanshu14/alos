@@ -10,24 +10,24 @@ PASSWORD_REGEX_LOWER = re.compile(r"[a-z]")
 PASSWORD_REGEX_DIGIT = re.compile(r"\d")
 PASSWORD_REGEX_SPECIAL = re.compile(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]")
 
-# Registration ke waqt sirf ye roles allow honge (security: koi bhi khud ko
-# "admin" bana ke register na kar sake, isliye whitelist rakhi hai)
+# Only these roles are allowed at registration time (security: this whitelist
+# prevents anyone from registering themselves as "admin")
 ALLOWED_ROLES = {"user", "admin", "manager"}
 
 
 def validate_password_strength(password: str) -> str:
-    """Password policy: min 8 chars, kam se kam ek uppercase, lowercase,
-    number, aur ek special character."""
+    """Password policy: min 8 characters, at least one uppercase, lowercase,
+    number, and one special character."""
     if len(password) < 8:
-        raise ValueError("Password kam se kam 8 characters ka hona chahiye")
+        raise ValueError("Password must be at least 8 characters long")
     if not PASSWORD_REGEX_UPPER.search(password):
-        raise ValueError("Password me kam se kam ek uppercase letter hona chahiye")
+        raise ValueError("Password must contain at least one uppercase letter")
     if not PASSWORD_REGEX_LOWER.search(password):
-        raise ValueError("Password me kam se kam ek lowercase letter hona chahiye")
+        raise ValueError("Password must contain at least one lowercase letter")
     if not PASSWORD_REGEX_DIGIT.search(password):
-        raise ValueError("Password me kam se kam ek number hona chahiye")
+        raise ValueError("Password must contain at least one number")
     if not PASSWORD_REGEX_SPECIAL.search(password):
-        raise ValueError("Password me kam se kam ek special character hona chahiye (!@#$% waghera)")
+        raise ValueError("Password must contain at least one special character (!@#$% etc.)")
     return password
 
 
@@ -49,7 +49,7 @@ class UserCreate(BaseModel):
     def check_role(cls, v: str) -> str:
         v = v.strip().lower()
         if v not in ALLOWED_ROLES:
-            raise ValueError(f"Role sirf inme se ek hona chahiye: {', '.join(sorted(ALLOWED_ROLES))}")
+            raise ValueError(f"Role must be one of: {', '.join(sorted(ALLOWED_ROLES))}")
         return v
 
 

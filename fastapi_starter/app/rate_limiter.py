@@ -1,6 +1,6 @@
 """
-Shared rate limiter instance (slowapi) - login jaise sensitive endpoints
-ko brute-force se bachane ke liye. IP address ke hisaab se limit lagta hai.
+Shared rate limiter instance (slowapi) - protects sensitive endpoints
+like login from brute-force attacks. Limits are applied per IP address.
 """
 from slowapi import Limiter
 from slowapi.util import get_remote_address

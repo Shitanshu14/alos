@@ -1,13 +1,13 @@
 """
-Saari settings yahan se aati hain — environment variables se.
-Production me .env file banao (.env.example ko copy karke) aur
-wahan real values daalo. Kabhi bhi secrets (SECRET_KEY, SMTP password,
-etc.) code me hardcode mat karo.
+All settings are loaded from here — from environment variables.
+For production, create a .env file (by copying .env.example) and
+put the real values there. Never hardcode secrets (SECRET_KEY, SMTP
+password, etc.) in the code.
 """
 import os
 from dotenv import load_dotenv
 
-load_dotenv()  # .env file agar exist karti hai to load kar leta hai
+load_dotenv()  # Loads the .env file if it exists
 
 
 def _get_bool(key: str, default: bool) -> bool:
@@ -39,18 +39,18 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 
     # --- CORS ---
-    # Production me "*" kabhi mat use karna — apna actual frontend domain daalo.
+    # Never use "*" in production — put your actual frontend domain here.
     # Comma separated: CORS_ORIGINS=https://myapp.com,https://www.myapp.com
     CORS_ORIGINS: list = _get_list("CORS_ORIGINS", ["http://localhost:3000", "http://127.0.0.1:3000"])
 
-    # --- HTTPS redirect (production me True rakho, agar proxy/host pehle se HTTPS enforce nahi karta) ---
+    # --- HTTPS redirect (set to True in production, unless the proxy/host already enforces HTTPS) ---
     FORCE_HTTPS: bool = _get_bool("FORCE_HTTPS", False)
 
     # --- Rate limiting ---
     LOGIN_RATE_LIMIT: str = os.getenv("LOGIN_RATE_LIMIT", "5/minute")
 
     # --- Email / SMTP ---
-    # Agar ye configure nahi hai to emails console/log me print ho jaayenge (dev mode).
+    # If this isn't configured, emails will be printed to the console/log instead (dev mode).
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USER: str = os.getenv("SMTP_USER", "")
@@ -58,7 +58,7 @@ class Settings:
     SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "no-reply@example.com")
     SMTP_USE_TLS: bool = _get_bool("SMTP_USE_TLS", True)
 
-    # Frontend URLs jo verification/reset emails ke links me use honge
+    # Frontend URL used in the links of verification/reset emails
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
     # --- App ---

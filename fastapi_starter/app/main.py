@@ -21,10 +21,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app")
 
-# Ye line database tables ko automatically bana deti hai (agar pehle se nahi hai)
+# Creates all database tables automatically if they don't already exist
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Mera Backend API")
+app = FastAPI(title="My Backend API")
 
 # ---------- Rate limiting (slowapi) ----------
 app.state.limiter = limiter
@@ -35,16 +35,16 @@ def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     logger.warning("Rate limit exceeded for %s on %s", request.client.host if request.client else "unknown", request.url.path)
     return JSONResponse(
         status_code=429,
-        content={"detail": "Too many requests. Thoda ruk ke phir try karo."},
+        content={"detail": "Too many requests. Please try again later."},
     )
 
 
 # ---------- Global exception handling (crash -> error_logs table) ----------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Koi bhi unhandled exception (crash) yahan pakda jaata hai.
-    Client ko generic 500 message milta hai, aur poori detail
-    (endpoint, method, error, traceback) error_logs table me save ho jaati hai."""
+    """Catches any unhandled exception (crash) here.
+    The client receives a generic 500 message, while the full details
+    (endpoint, method, error, traceback) are saved to the error_logs table."""
     tb_str = traceback.format_exc()
     client_ip = request.client.host if request.client else None
 
@@ -62,28 +62,28 @@ async def global_exception_handler(request: Request, exc: Exception):
         ))
         db.commit()
     except Exception:
-        # Agar error log save karte waqt bhi kuch fail ho jaaye, to kam se kam
-        # ye original crash ke upar dubara crash na de - bas log kar do
-        logger.exception("Error log ko database me save nahi kar paaye")
+        # If saving the error log itself fails, at least make sure we don't
+        # crash again on top of the original crash - just log it
+        logger.exception("Failed to save error log to database")
     finally:
         db.close()
 
     return JSONResponse(
         status_code=500,
-        content={"detail": "Kuch galat ho gaya. Hamari team ko notify kar diya gaya hai."},
+        content={"detail": "Something went wrong. Our team has been notified."},
     )
 
 
 # ---------- HTTPS redirect ----------
-# Production me FORCE_HTTPS=true karo .env me (agar hosting provider khud
-# HTTPS enforce nahi karta). Dev me ye off rehta hai warna localhost break ho jaayega.
+# Set FORCE_HTTPS=true in .env for production (if the hosting provider
+# doesn't already enforce HTTPS). Kept off in dev, otherwise localhost breaks.
 if settings.FORCE_HTTPS:
     app.add_middleware(HTTPSRedirectMiddleware)
 
 
 # ---------- Security headers ----------
-# /docs aur /redoc FastAPI ke Swagger UI CDN se scripts/styles load karte hain,
-# isliye unke liye CSP thoda relax rakhi hai. Baaki saare endpoints pe strict rehta hai.
+# /docs and /redoc load scripts/styles from FastAPI's Swagger UI CDN,
+# so their CSP is relaxed slightly. All other endpoints stay strict.
 DOCS_PATHS = {"/docs", "/redoc", "/openapi.json"}
 
 
@@ -119,13 +119,13 @@ async def log_requests(request: Request, call_next):
 
 
 # ---------- CORS ----------
-# Stitch se banaya frontend agar alag domain/port pe chalega to ye zaroori hai
-# warna browser requests block kar dega.
-# Production me CORS_ORIGINS env var me apna actual frontend URL(s) daal dena -
-# "*" kabhi production me use mat karna (allow_credentials=True ke saath to bilkul nahi,
-# browsers ise reject bhi kar dete hain).
+# Required if the frontend runs on a different domain/port,
+# otherwise the browser will block the requests.
+# In production, set your actual frontend URL(s) in the CORS_ORIGINS env var -
+# never use "*" in production (especially not with allow_credentials=True,
+# browsers reject that combination anyway).
 if "*" in settings.CORS_ORIGINS and settings.ENV == "production":
-    logger.warning("CORS_ORIGINS me '*' hai production me - ise fix karo!")
+    logger.warning("CORS_ORIGINS contains '*' in production - please fix this!")
 
 app.add_middleware(
     CORSMiddleware,
@@ -141,12 +141,12 @@ app.include_router(items_router.router)
 
 @app.get("/")
 def root():
-    return {"message": "API chal rahi hai! /docs pe jaake test karo"}
+    return {"message": "API is running! Go to /docs to test it."}
 
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint - uptime monitoring / load balancer ke liye."""
+    """Health check endpoint - for uptime monitoring / load balancer use."""
     db_status = "ok"
     try:
         db = SessionLocal()

@@ -21,7 +21,7 @@ class User(Base):
     )
 
 
-# Sample table - isko apne app ke hisaab se badal dena
+# Sample table - modify this to fit your app
 class Item(Base):
     __tablename__ = "items"
 
@@ -37,7 +37,7 @@ class Item(Base):
 
 
 class RefreshToken(Base):
-    """Har issued refresh token ka record - logout aur token revocation ke liye."""
+    """Record of every issued refresh token - used for logout and token revocation."""
     __tablename__ = "refresh_tokens"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -71,15 +71,15 @@ class EmailVerificationToken(Base):
 
 
 class ErrorLog(Base):
-    """Har unhandled exception (crash) ki entry yahan save hoti hai —
-    global exception handler (main.py) isme automatically likhta hai."""
+    """Every unhandled exception (crash) is logged here —
+    the global exception handler (main.py) writes to this automatically."""
     __tablename__ = "error_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    path = Column(String, nullable=False)          # kaunsa endpoint tha, e.g. /auth/signup
+    path = Column(String, nullable=False)          # which endpoint, e.g. /auth/signup
     method = Column(String, nullable=False)         # GET / POST / etc.
     error_type = Column(String, nullable=False)     # exception class ka naam, e.g. ValueError
     error_message = Column(String, nullable=False)  # str(exception)
-    traceback = Column(String, nullable=True)        # poora traceback (debugging ke liye)
+    traceback = Column(String, nullable=True)        # full traceback (for debugging)
     client_ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True, nullable=False)

@@ -31,9 +31,9 @@ def decode_access_token(token: str) -> dict:
 
 
 # ---------- Refresh tokens ----------
-# Refresh tokens ek random opaque string hote hain (JWT nahi) jo DB me
-# store hote hain (RefreshToken table) - isse logout / revocation aasan
-# ho jaata hai (bas DB row ko revoked=True kar do).
+# Refresh tokens are random opaque strings (not JWTs), stored in the DB
+# (RefreshToken table) - this makes logout / revocation simple
+# (just set the DB row's revoked=True).
 def generate_refresh_token() -> str:
     return secrets.token_urlsafe(48)
 
