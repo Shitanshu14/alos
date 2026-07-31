@@ -129,3 +129,35 @@ class ItemOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Chapter related schemas (Week 3: Chapter Upload) ---
+
+ALLOWED_CHAPTER_FILE_TYPES = {"pdf", "docx"}
+
+
+class ChapterOut(BaseModel):
+    id: int
+    class_name: str
+    subject: str
+    chapter_name: str
+    original_filename: str
+    file_type: str
+    file_size_bytes: int
+    status: str
+    status_message: Optional[str] = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ChapterStatusOut(BaseModel):
+    id: int
+    chapter_name: str
+    status: str
+    status_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True

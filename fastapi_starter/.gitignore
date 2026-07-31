@@ -14,3 +14,4 @@ app.db
 
 # macOS
 .DS_Store
+uploads/

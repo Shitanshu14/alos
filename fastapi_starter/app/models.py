@@ -83,3 +83,32 @@ class ErrorLog(Base):
     traceback = Column(String, nullable=True)        # full traceback (for debugging)
     client_ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True, nullable=False)
+
+
+class Chapter(Base):
+    """A school chapter uploaded by a teacher/parent. This is the starting
+    point of the whole ALOS content pipeline (Week 3 → Week 8 in the plan):
+    upload -> processing -> matching/generation -> ready for the student."""
+    __tablename__ = "chapters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    class_name = Column(String, nullable=False)      # e.g. "Class 6"
+    subject = Column(String, nullable=False)         # e.g. "Science"
+    chapter_name = Column(String, nullable=False)    # e.g. "Photosynthesis"
+
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)       # where the file is stored on disk
+    file_type = Column(String, nullable=False)       # "pdf" or "docx"
+    file_size_bytes = Column(Integer, nullable=False)
+
+    # Pipeline status: uploaded -> processing -> ready -> failed
+    status = Column(String, default="uploaded", nullable=False, index=True)
+    status_message = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow, nullable=False,
+    )

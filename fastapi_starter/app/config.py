@@ -64,5 +64,12 @@ class Settings:
     # --- App ---
     ENV: str = os.getenv("ENV", "development")  # "development" | "production"
 
+    # --- Chapter file uploads ---
+    # NOTE: on Render's free tier this local folder is wiped on every
+    # redeploy/restart. Fine for early development; before real pilot
+    # usage, switch this to cloud storage (S3/Cloudinary/etc).
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads/chapters")
+    MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "20"))
+
 
 settings = Settings()
