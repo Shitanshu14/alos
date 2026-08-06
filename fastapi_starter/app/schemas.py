@@ -11,8 +11,14 @@ PASSWORD_REGEX_DIGIT = re.compile(r"\d")
 PASSWORD_REGEX_SPECIAL = re.compile(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]")
 
 # Only these roles are allowed at registration time (security: this whitelist
-# prevents anyone from registering themselves as "admin")
-ALLOWED_ROLES = {"user", "admin", "manager"}
+# prevents anyone from registering themselves as "admin").
+# ALOS-specific roles - each gets a different dashboard view (see dashboard_router.py):
+#   teacher - uploads chapters, sees processing status
+#   parent  - will see their children's learning progress (Week 10)
+#   student - will see assigned content + progress (Week 8-9)
+#   school  - institution-level account, same view as teacher for now
+#   admin   - internal/ops use only
+ALLOWED_ROLES = {"teacher", "parent", "student", "school", "admin"}
 
 
 def validate_password_strength(password: str) -> str:
@@ -37,7 +43,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     phone: str
     password: str
-    role: str = "user"
+    role: str  # required - must be one of ALLOWED_ROLES (teacher/parent/student/school/admin)
 
     @field_validator("password")
     @classmethod
@@ -158,6 +164,111 @@ class ChapterStatusOut(BaseModel):
     chapter_name: str
     status: str
     status_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# --- Dashboard (Week 2: role-based dashboard) ---
+
+class DashboardOut(BaseModel):
+    role: str
+    message: str
+    chapters_by_status: Optional[dict] = None
+    recent_chapters: Optional[list[ChapterOut]] = None
+
+
+# --- Chapter brief (Week 4: AI understanding of a chapter) ---
+
+class ChapterBriefOut(BaseModel):
+    chapter_id: int
+    summary: str
+    key_concepts: list[str]
+    suggested_content_types: list[str]
+    created_at: datetime.datetime
+
+
+# --- Content Library (Week 5) ---
+
+ALLOWED_CONTENT_TYPES = {"video", "story", "poem", "cartoon"}
+
+
+def _normalize_tags(tags: list[str]) -> list[str]:
+    """Lowercase + strip + dedupe, preserving first-seen order."""
+    seen = []
+    for t in tags:
+        clean = t.strip().lower()
+        if clean and clean not in seen:
+            seen.append(clean)
+    return seen
+
+
+class ContentItemCreate(BaseModel):
+    title: str
+    content_type: str
+    subject: str
+    class_name: str
+    description: Optional[str] = None
+    body: Optional[str] = None        # story/poem text
+    media_url: Optional[str] = None   # video/cartoon link
+    tags: list[str] = []
+
+    @field_validator("content_type")
+    @classmethod
+    def check_content_type(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ALLOWED_CONTENT_TYPES:
+            raise ValueError(f"content_type must be one of: {', '.join(sorted(ALLOWED_CONTENT_TYPES))}")
+        return v
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, v: list[str]) -> list[str]:
+        return _normalize_tags(v)
+
+
+class ContentItemUpdate(BaseModel):
+    """All fields optional - PATCH-style partial update."""
+    title: Optional[str] = None
+    content_type: Optional[str] = None
+    subject: Optional[str] = None
+    class_name: Optional[str] = None
+    description: Optional[str] = None
+    body: Optional[str] = None
+    media_url: Optional[str] = None
+    tags: Optional[list[str]] = None
+
+    @field_validator("content_type")
+    @classmethod
+    def check_content_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if v not in ALLOWED_CONTENT_TYPES:
+            raise ValueError(f"content_type must be one of: {', '.join(sorted(ALLOWED_CONTENT_TYPES))}")
+        return v
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        return _normalize_tags(v)
+
+
+class ContentItemOut(BaseModel):
+    id: int
+    title: str
+    content_type: str
+    subject: str
+    class_name: str
+    description: Optional[str] = None
+    body: Optional[str] = None
+    media_url: Optional[str] = None
+    is_seed_placeholder: bool
+    tags: list[str] = []
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
 
     class Config:
         from_attributes = True

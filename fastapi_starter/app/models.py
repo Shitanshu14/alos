@@ -1,6 +1,7 @@
 import datetime
 
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Table
+from sqlalchemy.orm import relationship
 from .database import Base
 
 
@@ -13,7 +14,7 @@ class User(Base):
     phone = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
-    role = Column(String, default="user", nullable=False)
+    role = Column(String, nullable=False)  # teacher / parent / student / school / admin
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime, default=datetime.datetime.utcnow,
@@ -112,3 +113,88 @@ class Chapter(Base):
         DateTime, default=datetime.datetime.utcnow,
         onupdate=datetime.datetime.utcnow, nullable=False,
     )
+
+
+class ChapterBrief(Base):
+    """Week 4 output: the AI-generated understanding of a chapter - its
+    summary, key concepts, and suggested content types. Produced by the
+    background processing pipeline right after upload (see chapters_router.py
+    _process_chapter). Week 5/6 (content library + matching) will read this
+    to find or generate the right learning content for the chapter."""
+    __tablename__ = "chapter_briefs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), unique=True, nullable=False, index=True)
+
+    summary = Column(String, nullable=False)
+    key_concepts = Column(String, nullable=False)            # JSON-encoded list[str]
+    suggested_content_types = Column(String, nullable=True)  # JSON-encoded list[str]
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Week 5 - Content Library
+# ---------------------------------------------------------------------------
+
+# Many-to-many link between ContentItem and ContentTag (a content item can
+# cover several concepts, and one concept can appear in many content items -
+# this is what Week 6's matching step will query against).
+content_item_tags = Table(
+    "content_item_tags",
+    Base.metadata,
+    Column("content_item_id", Integer, ForeignKey("content_items.id"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("content_tags.id"), primary_key=True),
+)
+
+
+class ContentTag(Base):
+    """A single concept/topic tag (e.g. 'photosynthesis', 'fractions').
+    Normalized (lowercase, deduplicated) so matching (Week 6) can compare
+    a chapter's key_concepts against these directly."""
+    __tablename__ = "content_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True, nullable=False)
+
+    items = relationship("ContentItem", secondary=content_item_tags, back_populates="tags")
+
+
+class ContentItem(Base):
+    """One piece of ready-made learning content in the library - a video,
+    story, poem, or cartoon. Seeded in bulk (see seed_content_library.py)
+    and manageable via the admin endpoints (content_library_router.py).
+    Week 6 (matching) will search this table by subject/class_name/tags to
+    find the best existing item for a chapter before generating anything new."""
+    __tablename__ = "content_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    title = Column(String, nullable=False)
+    content_type = Column(String, nullable=False, index=True)  # "video" | "story" | "poem" | "cartoon"
+    description = Column(String, nullable=True)                # short one-line blurb
+
+    # Direct filter columns (fast lookups without joining tags) -
+    # every item belongs to one subject and one class level.
+    subject = Column(String, nullable=False, index=True)       # e.g. "Science"
+    class_name = Column(String, nullable=False, index=True)    # e.g. "Class 6"
+
+    # Actual content: text-based items (story/poem) store their text in
+    # `body`; media items (video/cartoon) store a link in `media_url`.
+    body = Column(Text, nullable=True)
+    media_url = Column(String, nullable=True)
+
+    # True for content inserted by the bulk seed script (placeholder/template
+    # text) rather than a real curated item - lets admins find and replace
+    # these before pilot launch.
+    is_seed_placeholder = Column(Boolean, default=False, nullable=False)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # null for system-seeded items
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow, nullable=False,
+    )
+
+    tags = relationship("ContentTag", secondary=content_item_tags, back_populates="items")

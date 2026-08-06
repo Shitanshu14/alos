@@ -270,3 +270,11 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 def read_own_profile(current_user: models.User = Depends(get_current_user)):
     """After logging in, call this endpoint to check your own profile."""
     return current_user
+
+
+def require_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
+    """Use this in any route that only admins should be able to call
+    (e.g. content library management)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user

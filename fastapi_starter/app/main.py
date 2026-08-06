@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 
 from . import models
 from .database import engine, SessionLocal
-from .routers import auth_router, items_router, chapters_router
+from .routers import auth_router, items_router, chapters_router, dashboard_router, content_library_router
 from .config import settings
 from .rate_limiter import limiter
 
@@ -138,6 +138,8 @@ app.add_middleware(
 app.include_router(auth_router.router)
 app.include_router(items_router.router)
 app.include_router(chapters_router.router)
+app.include_router(dashboard_router.router)
+app.include_router(content_library_router.router)
 
 
 @app.get("/")
