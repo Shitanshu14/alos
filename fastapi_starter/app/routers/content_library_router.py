@@ -11,6 +11,8 @@ falling back to generating something new (Week 7).
   curation is an internal/ops task, not something teachers or parents do.
 """
 import logging
+import secrets
+import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -18,6 +20,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..database import get_db
+from ..config import settings
+from ..services.notification_service import notify
 from .auth_router import get_current_user, require_admin
 from ..seed_content_library import seed_content_library
 
@@ -55,6 +59,7 @@ def _to_out(item: models.ContentItem) -> schemas.ContentItemOut:
         body=item.body,
         media_url=item.media_url,
         is_seed_placeholder=item.is_seed_placeholder,
+        is_generated=item.is_generated,
         tags=[t.name for t in item.tags],
         created_at=item.created_at,
         updated_at=item.updated_at,
@@ -234,3 +239,95 @@ def seed_library(
     if inserted == 0:
         return {"message": "Content library already has items - nothing was inserted."}
     return {"message": f"Inserted {inserted} content library item(s)."}
+
+
+# =========================================================
+# Week 11: Share-link generation (public, no-login link)
+# =========================================================
+@router.post(
+    "/{item_id}/share",
+    response_model=schemas.ShareLinkOut,
+    summary="Create a public share link for a content item (story/video/etc.)",
+)
+def create_share_link(
+    item_id: int,
+    payload: schemas.ShareLinkCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = db.query(models.ContentItem).filter(models.ContentItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content item not found")
+
+    token = secrets.token_urlsafe(16)
+    expires_at = None
+    if payload.expires_in_days:
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=payload.expires_in_days)
+
+    link = models.ShareLink(
+        token=token,
+        content_item_id=item.id,
+        created_by=current_user.id,
+        expires_at=expires_at,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+
+    return schemas.ShareLinkOut(
+        token=link.token,
+        share_url=f"{settings.FRONTEND_URL}/shared/{link.token}",
+        content_item_id=item.id,
+        expires_at=link.expires_at,
+        created_at=link.created_at,
+    )
+
+
+# =========================================================
+# Week 11: Classroom sharing (broadcast to a list of students)
+# =========================================================
+@router.post(
+    "/{item_id}/share-classroom",
+    response_model=schemas.MessageResponse,
+    summary="Share a content item with a list of students (teacher/school only)",
+)
+def share_with_classroom(
+    item_id: int,
+    payload: schemas.ClassroomShareRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in ("teacher", "school"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only teacher/school accounts can share with a classroom")
+
+    item = db.query(models.ContentItem).filter(models.ContentItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content item not found")
+
+    shared_count = 0
+    skipped = []
+    for student_id in payload.student_user_ids:
+        student = db.query(models.User).filter(models.User.id == student_id).first()
+        if not student or student.role != "student":
+            skipped.append(student_id)
+            continue
+        db.add(models.SharedContent(
+            content_item_id=item.id,
+            shared_by=current_user.id,
+            target_type="user",
+            target_id=student_id,
+            message=payload.message,
+        ))
+        notify(
+            db, student,
+            title="New content shared with you",
+            message=f'{current_user.full_name} shared "{item.title}" with you.'
+                    + (f" Note: {payload.message}" if payload.message else ""),
+        )
+        shared_count += 1
+
+    db.commit()
+    detail = f"Shared with {shared_count} student(s)."
+    if skipped:
+        detail += f" Skipped {len(skipped)} invalid/non-student ID(s): {skipped}."
+    return {"message": detail}

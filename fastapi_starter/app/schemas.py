@@ -2,7 +2,7 @@ import re
 import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, Field
 
 
 PASSWORD_REGEX_UPPER = re.compile(r"[A-Z]")
@@ -176,6 +176,7 @@ class DashboardOut(BaseModel):
     message: str
     chapters_by_status: Optional[dict] = None
     recent_chapters: Optional[list[ChapterOut]] = None
+    ready_chapter_count: Optional[int] = None
 
 
 # --- Chapter brief (Week 4: AI understanding of a chapter) ---
@@ -266,9 +267,163 @@ class ContentItemOut(BaseModel):
     body: Optional[str] = None
     media_url: Optional[str] = None
     is_seed_placeholder: bool
+    is_generated: bool = False
     tags: list[str] = []
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
     class Config:
         from_attributes = True
+
+
+# --- Content Matching (Week 6) ---
+
+class ContentMatchOut(BaseModel):
+    content_type: str
+    match_status: str          # "matched" | "no_match" | "failed_quality"
+    match_score: float
+    quality_notes: Optional[str] = None
+    matched_concepts: list[str] = []
+    customized_title: Optional[str] = None
+    customized_description: Optional[str] = None
+    content_item: Optional[ContentItemOut] = None
+
+
+# --- Notifications (Week 8) ---
+
+class NotificationOut(BaseModel):
+    id: int
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Pipeline status (Week 8) ---
+
+class ChapterPipelineStatusOut(BaseModel):
+    chapter_id: int
+    chapter_name: str
+    stage: str  # "uploaded" | "processing" | "content_ready" | "failed"
+    status_message: Optional[str] = None
+    matched_count: int = 0
+    generated_count: int = 0
+    unresolved_count: int = 0
+
+
+# --- Progress tracking (Week 8 + 9) ---
+
+class ContentAccessOut(BaseModel):
+    """Returned when a learner opens a piece of content - the content
+    itself plus their current progress on it, for resuming."""
+    content: ContentItemOut
+    status: str
+    progress_percent: int
+    last_position_seconds: Optional[int] = None
+
+
+class ProgressUpdate(BaseModel):
+    status: Optional[str] = None            # "in_progress" | "completed"
+    progress_percent: Optional[int] = Field(None, ge=0, le=100)
+    last_position_seconds: Optional[int] = Field(None, ge=0)
+
+
+class ProgressOut(BaseModel):
+    content_item_id: int
+    chapter_id: Optional[int] = None
+    status: str
+    progress_percent: int
+    last_position_seconds: Optional[int] = None
+    updated_at: datetime.datetime
+    content: Optional[ContentItemOut] = None
+
+
+class CompletedChapterOut(BaseModel):
+    chapter_id: int
+    chapter_name: str
+    subject: str
+    class_name: str
+    completed_at: datetime.datetime
+
+
+# --- Parent-child (Week 10) ---
+
+class ChildCreate(BaseModel):
+    name: str
+    class_name: Optional[str] = None
+
+
+class ChildClassUpdate(BaseModel):
+    class_name: str
+
+
+class ChildOut(BaseModel):
+    id: int
+    name: str
+    class_name: Optional[str] = None
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ChildProgressReportOut(BaseModel):
+    child: ChildOut
+    completed_chapters: list[CompletedChapterOut] = []
+    in_progress: list[ProgressOut] = []
+
+
+# --- Content Sharing (Week 11) ---
+
+class ShareLinkCreate(BaseModel):
+    expires_in_days: Optional[int] = Field(None, ge=1, le=365)
+
+
+class ShareLinkOut(BaseModel):
+    token: str
+    share_url: str
+    content_item_id: int
+    expires_at: Optional[datetime.datetime] = None
+    created_at: datetime.datetime
+
+
+class SharedContentView(BaseModel):
+    """Public view returned when resolving a share token - deliberately
+    limited to what's safe to show without login (no internal IDs)."""
+    title: str
+    content_type: str
+    description: Optional[str] = None
+    body: Optional[str] = None
+    media_url: Optional[str] = None
+    subject: str
+    class_name: str
+
+
+class SendToChildRequest(BaseModel):
+    content_item_id: int
+    message: Optional[str] = None
+
+
+class ClassroomShareRequest(BaseModel):
+    student_user_ids: list[int]
+    message: Optional[str] = None
+
+    @field_validator("student_user_ids")
+    @classmethod
+    def check_ids(cls, v: list[int]) -> list[int]:
+        if not v:
+            raise ValueError("student_user_ids must not be empty")
+        if len(v) > 200:
+            raise ValueError("Too many students in one share (max 200)")
+        return v
+
+
+class SharedContentOut(BaseModel):
+    id: int
+    content_item_id: int
+    content: Optional[ContentItemOut] = None
+    message: Optional[str] = None
+    created_at: datetime.datetime

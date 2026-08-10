@@ -25,6 +25,11 @@ from ..database import get_db, SessionLocal
 from ..config import settings
 from ..services.text_extraction import extract_text, TextExtractionError
 from ..services.ai_service import analyze_chapter_text, AIServiceError
+from ..services.matching_service import find_best_matches, evaluate_matches, get_unmatched_content_types, CONTENT_TYPES
+from ..services.customization_service import customize_for_chapter
+from ..services.content_generation_service import decide_content_types, generate_content, validate_generated_content
+from ..services.video_rendering_service import render_video, VideoRenderingError
+from ..services.notification_service import notify
 from .auth_router import get_current_user
 
 logger = logging.getLogger("app.chapters")
@@ -36,6 +41,128 @@ def _ensure_upload_dir() -> Path:
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
+
+
+def _run_matching(db: Session, chapter: models.Chapter, key_concepts: list) -> None:
+    """Week 6+7 pipeline step, called from _process_chapter right after the
+    chapter brief is generated:
+      1. Find the best library match for each content type (Week 6).
+      2. Quality-check each match; detect which types have no valid match
+         (Week 7 - no-match detection).
+      3. For those types, decide priority by age/subject and generate new
+         content locally, then push it into the library (Week 7).
+    Saves one ContentMatch row per content type either way."""
+    # Clear any previous matches (e.g. if this chapter is reprocessed)
+    db.query(models.ContentMatch).filter(models.ContentMatch.chapter_id == chapter.id).delete()
+
+    raw_matches = find_best_matches(db, chapter, key_concepts)
+    evaluated = evaluate_matches(raw_matches)
+    unmatched_types = get_unmatched_content_types(evaluated)
+
+    # Content type decision logic (age/subject based) - used to log/prioritize;
+    # generation still covers every unmatched slot so the chapter ends up
+    # with all 4 content types available.
+    brief = db.query(models.ChapterBrief).filter(models.ChapterBrief.chapter_id == chapter.id).first()
+    suggested_types = json.loads(brief.suggested_content_types) if brief and brief.suggested_content_types else []
+    priority_order = decide_content_types(chapter, suggested_types)
+    logger.info("Chapter %s content type priority: %s", chapter.id, priority_order)
+
+    for content_type in CONTENT_TYPES:
+        result = evaluated[content_type]
+
+        if result["is_valid"]:
+            custom = customize_for_chapter(result["item"], chapter, result["matched_concepts"])
+            db.add(models.ContentMatch(
+                chapter_id=chapter.id,
+                content_type=content_type,
+                content_item_id=result["item"].id,
+                match_score=result["score"],
+                match_status="matched",
+                quality_notes=result["reason"],
+                matched_concepts=json.dumps(result["matched_concepts"]),
+                customized_title=custom["title"],
+                customized_description=custom["description"],
+            ))
+            continue
+
+        # --- Week 7: no match found - generate new content instead ---
+        generated = generate_content(chapter, content_type, key_concepts)
+        is_valid, gen_reason = validate_generated_content(generated)
+
+        if not is_valid:
+            db.add(models.ContentMatch(
+                chapter_id=chapter.id,
+                content_type=content_type,
+                content_item_id=None,
+                match_score=result["score"],
+                match_status="failed_quality",
+                quality_notes=f"Library: {result['reason']} | Generation: {gen_reason}",
+                matched_concepts=json.dumps(result["matched_concepts"]),
+            ))
+            continue
+
+        # --- Week 7 extended: for "video", try to actually render a real .mp4 ---
+        if content_type == "video":
+            try:
+                relative_path = render_video(chapter.chapter_name, generated["body"], settings.GENERATED_MEDIA_DIR)
+                generated["media_url"] = f"/media/{relative_path}"
+                generated["title"] = generated["title"].replace(" (Script)", "")
+                generated["description"] = (
+                    f"An auto-generated narrated video covering {chapter.chapter_name}'s key concepts."
+                )
+                generated["body"] = generated["body"].replace(
+                    "[Auto-generated script - record/animate an actual video from this before publishing to students.]",
+                    "[This script was rendered into the video above (narrated slideshow, auto-generated locally).]",
+                )
+                gen_reason += " | Rendered as a real video (narrated slideshow)."
+            except VideoRenderingError as exc:
+                logger.warning("Video rendering failed for chapter %s, falling back to script only: %s", chapter.id, exc)
+                gen_reason += f" | Video rendering unavailable, kept as script only ({exc})."
+
+        new_item = models.ContentItem(
+            title=generated["title"],
+            content_type=content_type,
+            subject=chapter.subject,
+            class_name=chapter.class_name,
+            description=generated["description"],
+            body=generated["body"],
+            media_url=generated["media_url"],
+            is_seed_placeholder=False,
+            is_generated=True,
+            generated_for_chapter_id=chapter.id,
+            created_by=None,
+        )
+        # Tag the new item with the chapter's own key concepts so it's
+        # discoverable for future chapters covering the same ground.
+        tag_names = {c.strip().lower() for c in key_concepts if c.strip()}
+        tag_names.add(chapter.subject.strip().lower())
+        tag_names.add(chapter.class_name.strip().lower())
+        tags = []
+        for name in tag_names:
+            tag = db.query(models.ContentTag).filter(models.ContentTag.name == name).first()
+            if not tag:
+                tag = models.ContentTag(name=name)
+                db.add(tag)
+                db.flush()
+            tags.append(tag)
+        new_item.tags = tags
+
+        db.add(new_item)
+        db.flush()  # get new_item.id before referencing it
+
+        db.add(models.ContentMatch(
+            chapter_id=chapter.id,
+            content_type=content_type,
+            content_item_id=new_item.id,
+            match_score=1.0,  # generated specifically for this chapter - perfect fit by definition
+            match_status="generated",
+            quality_notes=gen_reason,
+            matched_concepts=json.dumps(key_concepts),
+            customized_title=generated["title"],
+            customized_description=generated["description"],
+        ))
+
+    db.flush()  # part of the same transaction as the rest of _process_chapter
 
 
 def _process_chapter(chapter_id: int) -> None:
@@ -61,6 +188,14 @@ def _process_chapter(chapter_id: int) -> None:
             chapter.status_message = str(exc)
             db.commit()
             logger.warning("Chapter %s processing failed: %s", chapter_id, exc)
+            uploader = db.query(models.User).filter(models.User.id == chapter.uploaded_by).first()
+            if uploader:
+                notify(
+                    db, uploader,
+                    title="Chapter processing failed",
+                    message=f"We couldn't process '{chapter.chapter_name}': {exc}",
+                )
+                db.commit()
             return
 
         # Replace any previous brief (e.g. if this chapter is reprocessed)
@@ -79,8 +214,22 @@ def _process_chapter(chapter_id: int) -> None:
             key_concepts=json.dumps(analysis["key_concepts"]),
             suggested_content_types=json.dumps(analysis.get("suggested_content_types", [])),
         ))
+
+        # --- Week 6+7: match the chapter against the content library, generate what's missing ---
+        _run_matching(db, chapter, analysis["key_concepts"])
+
         chapter.status = "ready"
         chapter.status_message = "Chapter understood - ready for content matching"
+
+        # --- Week 8: notify the uploader that their chapter is ready ---
+        uploader = db.query(models.User).filter(models.User.id == chapter.uploaded_by).first()
+        if uploader:
+            notify(
+                db, uploader,
+                title="Your chapter is ready!",
+                message=f"'{chapter.chapter_name}' has been processed and content is ready to view.",
+            )
+
         db.commit()
         logger.info("Chapter %s processed successfully", chapter_id)
 
@@ -216,6 +365,47 @@ def get_chapter_status(
 
 
 @router.get(
+    "/{chapter_id}/pipeline-status",
+    response_model=schemas.ChapterPipelineStatusOut,
+    summary="Detailed pipeline stage tracking for a chapter (Week 8)",
+)
+def get_chapter_pipeline_status(
+    chapter_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    chapter = db.query(models.Chapter).filter(models.Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
+    if chapter.uploaded_by != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this chapter")
+
+    matches = db.query(models.ContentMatch).filter(models.ContentMatch.chapter_id == chapter_id).all()
+    matched_count = sum(1 for m in matches if m.match_status == "matched")
+    generated_count = sum(1 for m in matches if m.match_status == "generated")
+    unresolved_count = sum(1 for m in matches if m.match_status not in ("matched", "generated"))
+
+    if chapter.status == "failed":
+        stage = "failed"
+    elif chapter.status in ("uploaded", "processing"):
+        stage = chapter.status
+    elif matches and unresolved_count == 0:
+        stage = "content_ready"  # all 4 content types resolved (matched or generated)
+    else:
+        stage = "ready"  # chapter understood, but matching/generation still incomplete
+
+    return schemas.ChapterPipelineStatusOut(
+        chapter_id=chapter.id,
+        chapter_name=chapter.chapter_name,
+        stage=stage,
+        status_message=chapter.status_message,
+        matched_count=matched_count,
+        generated_count=generated_count,
+        unresolved_count=unresolved_count,
+    )
+
+
+@router.get(
     "/{chapter_id}/brief",
     response_model=schemas.ChapterBriefOut,
     summary="Get the AI-generated content brief for a processed chapter",
@@ -251,6 +441,69 @@ def get_chapter_brief(
         suggested_content_types=json.loads(brief.suggested_content_types or "[]"),
         created_at=brief.created_at,
     )
+
+
+@router.get(
+    "/{chapter_id}/matches",
+    response_model=list[schemas.ContentMatchOut],
+    summary="Get the content-library matches found for a processed chapter",
+)
+def get_chapter_matches(
+    chapter_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    chapter = db.query(models.Chapter).filter(models.Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
+    if chapter.uploaded_by != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this chapter")
+
+    matches = (
+        db.query(models.ContentMatch)
+        .filter(models.ContentMatch.chapter_id == chapter_id)
+        .all()
+    )
+    if not matches:
+        detail = (
+            "Chapter processing failed - see the /status endpoint for details."
+            if chapter.status == "failed"
+            else "Matches aren't ready yet - processing may still be in progress."
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+    results = []
+    for m in matches:
+        content_item_out = None
+        if m.content_item_id:
+            item = db.query(models.ContentItem).filter(models.ContentItem.id == m.content_item_id).first()
+            if item:
+                content_item_out = schemas.ContentItemOut(
+                    id=item.id,
+                    title=item.title,
+                    content_type=item.content_type,
+                    subject=item.subject,
+                    class_name=item.class_name,
+                    description=item.description,
+                    body=item.body,
+                    media_url=item.media_url,
+                    is_seed_placeholder=item.is_seed_placeholder,
+                    is_generated=item.is_generated,
+                    tags=[t.name for t in item.tags],
+                    created_at=item.created_at,
+                    updated_at=item.updated_at,
+                )
+        results.append(schemas.ContentMatchOut(
+            content_type=m.content_type,
+            match_status=m.match_status,
+            match_score=m.match_score,
+            quality_notes=m.quality_notes,
+            matched_concepts=json.loads(m.matched_concepts or "[]"),
+            customized_title=m.customized_title,
+            customized_description=m.customized_description,
+            content_item=content_item_out,
+        ))
+    return results
 
 
 @router.get(

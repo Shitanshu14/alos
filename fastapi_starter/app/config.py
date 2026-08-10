@@ -71,5 +71,11 @@ class Settings:
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads/chapters")
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "20"))
 
+    # --- Generated media (Week 7 extended: real rendered videos) ---
+    # NOTE: same caveat as UPLOAD_DIR - on Render's free tier this is wiped
+    # on every redeploy/restart. Fine for development; switch to cloud
+    # storage before real pilot usage.
+    GENERATED_MEDIA_DIR: str = os.getenv("GENERATED_MEDIA_DIR", "generated_media")
+
 
 settings = Settings()

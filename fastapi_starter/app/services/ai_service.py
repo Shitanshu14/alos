@@ -84,7 +84,10 @@ def _extractive_summary(sentences: list, freq: Counter, max_sentences: int = 4) 
 
 def _extract_key_concepts(sentences: list, freq: Counter, max_concepts: int = 8) -> list:
     """Bigrams catch multi-word concepts (e.g. 'water cycle') that plain
-    single-word frequency would miss; combined with top single words."""
+    single-word frequency would miss; combined with top single words.
+    Prefers words/phrases that repeat, but falls back to the most frequent
+    ones even if they only appear once - short chapters (few sentences)
+    would otherwise never produce any concepts at all."""
     bigram_counts = Counter()
     for sentence in sentences:
         words = [w for w in WORD_RE.findall(sentence.lower()) if w not in STOPWORDS and len(w) > 2]
@@ -93,6 +96,12 @@ def _extract_key_concepts(sentences: list, freq: Counter, max_concepts: int = 8)
 
     top_bigrams = [phrase for phrase, count in bigram_counts.most_common(max_concepts) if count > 1]
     top_unigrams = [word for word, count in freq.most_common(max_concepts) if count > 1]
+
+    # Fallback for short/sparse text where nothing repeats: just take the
+    # most frequent words/phrases regardless of count.
+    if not top_bigrams and not top_unigrams:
+        top_bigrams = [phrase for phrase, _ in bigram_counts.most_common(max_concepts // 2)]
+        top_unigrams = [word for word, _ in freq.most_common(max_concepts)]
 
     concepts = []
     for phrase in top_bigrams + top_unigrams:

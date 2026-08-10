@@ -1,16 +1,22 @@
 import logging
 import traceback
+import os
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from sqlalchemy import text
 from slowapi.errors import RateLimitExceeded
 
 from . import models
 from .database import engine, SessionLocal
-from .routers import auth_router, items_router, chapters_router, dashboard_router, content_library_router
+from .routers import (
+    auth_router, items_router, chapters_router, dashboard_router,
+    content_library_router, notifications_router, progress_router, children_router,
+    sharing_router,
+)
 from .config import settings
 from .rate_limiter import limiter
 
@@ -25,6 +31,11 @@ logger = logging.getLogger("app")
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="My Backend API")
+
+# Serve generated videos (Week 7 extended) so their media_url is actually
+# viewable. Created here so it exists even before the first video renders.
+os.makedirs(settings.GENERATED_MEDIA_DIR, exist_ok=True)
+app.mount("/media", StaticFiles(directory=settings.GENERATED_MEDIA_DIR), name="media")
 
 # ---------- Rate limiting (slowapi) ----------
 app.state.limiter = limiter
@@ -140,6 +151,10 @@ app.include_router(items_router.router)
 app.include_router(chapters_router.router)
 app.include_router(dashboard_router.router)
 app.include_router(content_library_router.router)
+app.include_router(notifications_router.router)
+app.include_router(progress_router.router)
+app.include_router(children_router.router)
+app.include_router(sharing_router.router)
 
 
 @app.get("/")

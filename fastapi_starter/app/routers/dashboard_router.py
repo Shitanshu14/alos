@@ -63,11 +63,18 @@ def _teacher_or_school_dashboard(user: models.User, db: Session) -> schemas.Dash
         .all()
     )
 
+    ready_count = (
+        db.query(func.count(models.Chapter.id))
+        .filter(models.Chapter.uploaded_by == user.id, models.Chapter.status == "ready")
+        .scalar()
+    )
+
     return schemas.DashboardOut(
         role=user.role,
         message=f"{len(chapters)} chapter(s) uploaded so far.",
         chapters_by_status={status: count for status, count in status_counts},
         recent_chapters=[schemas.ChapterOut.model_validate(c) for c in chapters[:10]],
+        ready_chapter_count=ready_count,
     )
 
 

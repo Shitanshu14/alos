@@ -122,10 +122,16 @@ def _build_item(subject: str, class_name: str, concept: str, content_type: str) 
 
 def seed_content_library(db, force: bool = False) -> int:
     """Inserts the seed content items. Returns how many were inserted.
-    Skips entirely if the library already has items, unless force=True."""
-    existing_count = db.query(models.ContentItem).count()
+    Skips only if the *seed* items already exist (checked via
+    is_seed_placeholder=True) - unrelated content like Week 7's
+    auto-generated items must not block this from running."""
+    existing_count = (
+        db.query(models.ContentItem)
+        .filter(models.ContentItem.is_seed_placeholder == True)  # noqa: E712
+        .count()
+    )
     if existing_count > 0 and not force:
-        logger.info("Content library already has %s item(s) - skipping seed.", existing_count)
+        logger.info("Content library already has %s seed item(s) - skipping seed.", existing_count)
         return 0
 
     # Cache tags so the same concept/subject/class tag is reused across items

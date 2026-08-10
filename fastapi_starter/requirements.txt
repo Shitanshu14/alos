@@ -18,3 +18,9 @@ python-docx==1.1.2
 # NOTE: chapter understanding (summary/key-concepts) runs on a local,
 # free NLP algorithm (see app/services/ai_service.py) - no external AI
 # API or key needed, so no "anthropic" package here.
+
+# --- Video rendering (real .mp4 from the generated script, no paid AI) ---
+# Also needs system packages: ffmpeg + espeak-ng (apt-get install ffmpeg espeak-ng)
+pyttsx3==2.90
+moviepy==2.1.2
+pillow==10.4.0
