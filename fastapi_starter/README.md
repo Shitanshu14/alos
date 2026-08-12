@@ -30,11 +30,15 @@ quizzes, deployment/hardening) are not started yet.
 | 9 | Progress tracking: completed-chapters, continue-learning, history | ✅ Done |
 | 10 | Parent-child profiles + child class selection + progress report | ✅ Done |
 | 11 | Share-link generation, send-to-child, classroom sharing | ✅ Done |
-| 12 | Classrooms/homework | ⬜ Not started |
-| 13 | Games (concept-match, memory) | ⬜ Not started |
-| 14 | Quizzes | ⬜ Not started |
-| 15 | Bug-fixing, perf, load testing | ⬜ Not started |
-| 16 | Deployment, monitoring, feedback intake | ⬜ Not started |
+| 12 | Classroom/session model, homework, auto student access | ✅ Done |
+| 13 | Concept-match + memory game data endpoints | ✅ Done |
+| 14 | Quiz generation, submission/scoring, unlimited retries | ✅ Done |
+| 15 | Bug-fixing, caching, load testing | ✅ Done |
+| 16 | Deployment configs, monitoring/logging, feedback intake | ✅ Done |
+
+**All 16 weeks of the backend checklist are complete and tested** - see
+`tests/` for the full pytest suite (37 tests, all passing) and
+`DEPLOYMENT.md` for how to actually put this online.
 
 Everything in the "Done" rows has been tested end-to-end (see "Running the
 tests" below) — not just written, actually run and checked.
@@ -113,11 +117,15 @@ app/
     auth_router.py                - signup/login/refresh/logout/reset/verify, require_admin
     dashboard_router.py           - Week 2/8: role-based dashboard
     chapters_router.py            - Week 3/4/6/7/8: upload, pipeline, brief, matches
-    content_library_router.py     - Week 5: browse/search + admin CRUD + seed trigger
+    content_library_router.py     - Week 5/11/15: browse/search + admin CRUD + seed + sharing + caching
     notifications_router.py       - Week 8: list / mark read
     progress_router.py            - Week 8/9: access, resume, completed, continue, history
-    children_router.py            - Week 10: add child, set class, progress report
+    children_router.py            - Week 10/11: add child, set class, progress report, send-to-child
     sharing_router.py             - Week 11: public share-link resolve, shared-with-me
+    classrooms_router.py          - Week 12: classrooms, enrollment, homework, auto content access
+    games_router.py               - Week 13: concept-match + memory game data
+    quizzes_router.py             - Week 14: quiz generate/submit/retry
+    feedback_router.py            - Week 16: feedback intake + admin review
     items_router.py               - generic example CRUD from the original starter kit
 
   services/
@@ -128,9 +136,21 @@ app/
     content_generation_service.py - Week 7: content-type decision + local generation
     video_rendering_service.py    - Week 7 extended: renders a real .mp4 (TTS + slides + ffmpeg)
     notification_service.py       - Week 8: create in-app notification (+ optional email)
+    access_control_service.py     - Week 12: shared "can this user see this chapter" logic
+    game_generation_service.py    - Week 13: concept-match/memory game data from a chapter
+    quiz_generation_service.py    - Week 14: MCQ generation from a chapter's key concepts
 
+  cache.py                        - Week 15: simple in-process TTL cache (see content_library_router.py)
   seed_content_library.py        - Week 5: bulk-inserts 108 starter content items
-```
+
+tests/                            - pytest suite (Week 15) - 37 tests across every week's features
+  conftest.py                     - fixtures: isolated test DB, user/auth helper, sample chapter files
+  load_test.py                    - Week 15: dependency-free concurrent load test script
+
+Dockerfile                        - Week 16: includes ffmpeg + espeak-ng for real video rendering
+render.yaml                       - Week 16: Render.com deployment blueprint
+Procfile                          - Week 16: Railway/Heroku-style deploy (no video rendering)
+DEPLOYMENT.md                     - Week 16: full deployment + monitoring + load-testing guide
 
 ## Data model
 

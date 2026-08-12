@@ -343,3 +343,143 @@ class SharedContent(Base):
 
     message = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Week 12 - Classrooms + homework
+# ---------------------------------------------------------------------------
+
+class Classroom(Base):
+    """A teacher/school's classroom - a group of enrolled students who get
+    automatic access to any content the teacher assigns as homework
+    (see Homework below and 'auto student access' in classrooms_router.py)."""
+    __tablename__ = "classrooms"
+
+    id = Column(Integer, primary_key=True, index=True)
+    teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    name = Column(String, nullable=False)          # e.g. "Section A"
+    subject = Column(String, nullable=False)
+    class_name = Column(String, nullable=False)     # e.g. "Class 6"
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class ClassroomEnrollment(Base):
+    """One student enrolled in one classroom."""
+    __tablename__ = "classroom_enrollments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    enrolled_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class Homework(Base):
+    """A chapter (or a specific content item) assigned to a classroom.
+    The moment this is created, every enrolled student automatically has
+    access to it - no per-student sharing needed (see
+    classrooms_router.py's /content endpoint)."""
+    __tablename__ = "homework"
+
+    id = Column(Integer, primary_key=True, index=True)
+    classroom_id = Column(Integer, ForeignKey("classrooms.id"), nullable=False, index=True)
+    assigned_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True)
+    content_item_id = Column(Integer, ForeignKey("content_items.id"), nullable=True)
+
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=True)
+    due_date = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Week 13 - Games
+# ---------------------------------------------------------------------------
+
+class GameTemplate(Base):
+    """A generated game's data for one chapter, cached so it's not
+    regenerated on every request. game_type is 'concept_match' or
+    'memory' (see services/game_generation_service.py)."""
+    __tablename__ = "game_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False, index=True)
+    game_type = Column(String, nullable=False, index=True)
+
+    data = Column(Text, nullable=False)  # JSON-encoded game payload
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Week 14 - Quizzes
+# ---------------------------------------------------------------------------
+
+class Quiz(Base):
+    """One auto-generated quiz per chapter (5 questions - see
+    services/quiz_generation_service.py). Generated once, then reused for
+    every student/attempt (retries don't regenerate it)."""
+    __tablename__ = "quizzes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), unique=True, nullable=False, index=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class QuizQuestion(Base):
+    """One multiple-choice question belonging to a Quiz."""
+    __tablename__ = "quiz_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    quiz_id = Column(Integer, ForeignKey("quizzes.id"), nullable=False, index=True)
+
+    question_text = Column(String, nullable=False)
+    options = Column(Text, nullable=False)      # JSON-encoded list[str], 4 options
+    correct_index = Column(Integer, nullable=False)  # index into options
+
+    order = Column(Integer, nullable=False, default=0)
+
+
+class QuizAttempt(Base):
+    """One learner's attempt at a quiz. Unlimited retries are allowed -
+    attempt_number just increments each time (see quizzes_router.py)."""
+    __tablename__ = "quiz_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    quiz_id = Column(Integer, ForeignKey("quizzes.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    attempt_number = Column(Integer, nullable=False)
+    score = Column(Integer, nullable=False)
+    total_questions = Column(Integer, nullable=False)
+    answers = Column(Text, nullable=False)  # JSON-encoded list[int], the learner's chosen option indices
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Week 16 - Feedback intake
+# ---------------------------------------------------------------------------
+
+class Feedback(Base):
+    """Free-form feedback from any logged-in user during the pilot -
+    bug reports, feature requests, general comments. Reviewed by admins
+    via GET /feedback (feedback_router.py)."""
+    __tablename__ = "feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    category = Column(String, nullable=False, default="general")  # bug | feature_request | general
+    message = Column(String, nullable=False)
+    rating = Column(Integer, nullable=True)  # optional 1-5
+
+    status = Column(String, nullable=False, default="open")  # open | reviewed | resolved
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)

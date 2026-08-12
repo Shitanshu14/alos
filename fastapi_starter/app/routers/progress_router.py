@@ -9,8 +9,9 @@ children_router.py - the read-side logic below works the same for both,
 it just filters by owner_type/owner_id.
 """
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -41,30 +42,46 @@ def _content_item_out(item: models.ContentItem) -> schemas.ContentItemOut:
 
 
 def get_or_create_progress(
-    db: Session, owner_type: str, owner_id: int, content_item: models.ContentItem
+    db: Session, owner_type: str, owner_id: int, content_item: models.ContentItem,
+    chapter_id: Optional[int] = None,
 ) -> models.ContentProgress:
-    progress = (
-        db.query(models.ContentProgress)
-        .filter(
-            models.ContentProgress.owner_type == owner_type,
-            models.ContentProgress.owner_id == owner_id,
-            models.ContentProgress.content_item_id == content_item.id,
-        )
-        .first()
+    query = db.query(models.ContentProgress).filter(
+        models.ContentProgress.owner_type == owner_type,
+        models.ContentProgress.owner_id == owner_id,
+        models.ContentProgress.content_item_id == content_item.id,
     )
+    if chapter_id is not None:
+        # Caller told us which chapter context this is - a shared library
+        # item can be matched to several chapters, so scope strictly to
+        # this one (lets the same item have separate progress per chapter).
+        query = query.filter(models.ContentProgress.chapter_id == chapter_id)
+    # When no chapter_id is given, deliberately DON'T filter on it - we
+    # want to find whatever progress row already exists for this
+    # (owner, item) pair, regardless of which chapter_id it happened to
+    # get auto-resolved to on creation. Filtering by chapter_id=None here
+    # would miss a previously-created row that resolved to a real chapter
+    # id, causing progress to appear to "reset" on every repeat access.
+    progress = query.first()
+
     if not progress:
-        # Find which chapter this content item belongs to (via ContentMatch),
-        # if any - lets completed-chapters / history group by chapter.
-        match = (
-            db.query(models.ContentMatch)
-            .filter(models.ContentMatch.content_item_id == content_item.id)
-            .first()
-        )
+        resolved_chapter_id = chapter_id
+        if resolved_chapter_id is None:
+            # No chapter context given - best-effort guess from the most
+            # recent match (fine for content accessed outside any chapter
+            # flow, e.g. straight from the library).
+            match = (
+                db.query(models.ContentMatch)
+                .filter(models.ContentMatch.content_item_id == content_item.id)
+                .order_by(models.ContentMatch.id.desc())
+                .first()
+            )
+            resolved_chapter_id = match.chapter_id if match else None
+
         progress = models.ContentProgress(
             owner_type=owner_type,
             owner_id=owner_id,
             content_item_id=content_item.id,
-            chapter_id=match.chapter_id if match else None,
+            chapter_id=resolved_chapter_id,
             status="not_started",
             progress_percent=0,
         )
@@ -83,6 +100,7 @@ def get_or_create_progress(
 )
 def access_content(
     content_item_id: int,
+    chapter_id: Optional[int] = Query(None, description="Which chapter you're viewing this content for (a shared library item can belong to several chapters)"),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -90,7 +108,7 @@ def access_content(
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content item not found")
 
-    progress = get_or_create_progress(db, "user", current_user.id, item)
+    progress = get_or_create_progress(db, "user", current_user.id, item, chapter_id=chapter_id)
     if progress.status == "not_started":
         progress.status = "in_progress"
     db.commit()

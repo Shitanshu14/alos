@@ -1,0 +1,43 @@
+# Render.com deployment blueprint - https://render.com/docs/blueprint-spec
+#
+# Deploy: push this repo to GitHub, then in Render dashboard choose
+# "New > Blueprint" and point it at the repo. Render reads this file
+# automatically.
+#
+# Uses Docker (not Render's native Python buildpack) because real video
+# rendering needs ffmpeg + espeak-ng, which the native buildpack doesn't
+# provide - see Dockerfile.
+
+services:
+  - type: web
+    name: alos-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: alos-db
+          property: connectionString
+      - key: FRONTEND_URL
+        value: https://your-frontend-domain.example.com
+      - key: LOGIN_RATE_LIMIT
+        value: 5/minute
+      # SMTP_* - fill these in via the Render dashboard (not committed here)
+      # so real verification/reset/notification emails send instead of
+      # just being logged. Leave unset for dev-mode logging behavior.
+    healthCheckPath: /health
+    disk:
+      name: alos-media
+      mountPath: /app/generated_media
+      sizeGB: 1
+
+databases:
+  - name: alos-db
+    plan: free
+    databaseName: alos
+    user: alos

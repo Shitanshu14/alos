@@ -1,0 +1,142 @@
+"""Week 12-16: classrooms/homework, games, quizzes, feedback."""
+from conftest import wait_for_chapter_ready
+
+
+
+class TestClassrooms:
+    def test_create_enroll_and_access(self, client, make_user, sample_docx):
+        teacher, teacher_h = make_user("teacher")
+        student, student_h = make_user("student")
+        student_id = client.get("/auth/me", headers=student_h).json()["id"]
+
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=teacher_h,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "P"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, teacher_h, cid)
+
+        classroom = client.post("/classrooms/", headers=teacher_h, json={
+            "name": "Section A", "subject": "Science", "class_name": "Class 6",
+        }).json()
+
+        client.post(f"/classrooms/{classroom['id']}/enroll", headers=teacher_h, json={"student_user_id": student_id})
+        client.post(f"/classrooms/{classroom['id']}/homework", headers=teacher_h, json={"title": "HW", "chapter_id": cid})
+
+        content = client.get(f"/classrooms/{classroom['id']}/content", headers=student_h).json()
+        assert len(content) >= 1
+
+        # The homework link should also unlock the chapter itself, not just the game/quiz surfaces
+        r = client.get(f"/chapters/{cid}/matches", headers=student_h)
+        assert r.status_code == 200
+
+    def test_non_teacher_cannot_create_classroom(self, client, make_user):
+        student, headers = make_user("student")
+        r = client.post("/classrooms/", headers=headers, json={"name": "X", "subject": "Y", "class_name": "Z"})
+        assert r.status_code == 403
+
+
+class TestGames:
+    def test_concept_match_and_memory(self, client, make_user, sample_docx):
+        teacher, headers = make_user("teacher")
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=headers,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "P"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, headers, cid)
+
+        concept_match = client.get(f"/games/concept-match/{cid}", headers=headers).json()
+        assert len(concept_match["pairs"]) > 0
+
+        memory = client.get(f"/games/memory/{cid}", headers=headers).json()
+        assert len(memory["cards"]) % 2 == 0  # always pairs
+        concepts_seen = [c["concept"] for c in memory["cards"]]
+        assert all(concepts_seen.count(c) == 2 for c in set(concepts_seen))  # each concept appears exactly twice
+
+
+class TestQuizzes:
+    def test_generate_submit_and_retry(self, client, make_user, sample_docx):
+        teacher, headers = make_user("teacher")
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=headers,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "P"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, headers, cid)
+
+        quiz = client.get(f"/quizzes/chapter/{cid}", headers=headers).json()
+        assert len(quiz["questions"]) > 0
+        n = len(quiz["questions"])
+
+        result1 = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers, json={"answers": [0] * n}).json()
+        assert result1["attempt_number"] == 1
+
+        # Unlimited retries - submit again using the revealed correct answers
+        result2 = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers,
+                               json={"answers": result1["correct_indices"]}).json()
+        assert result2["attempt_number"] == 2
+        assert result2["score"] == n
+
+        attempts = client.get(f"/quizzes/{quiz['quiz_id']}/attempts", headers=headers).json()
+        assert len(attempts) == 2
+
+    def test_wrong_answer_count_rejected(self, client, make_user, sample_docx):
+        teacher, headers = make_user("teacher")
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=headers,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "P"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, headers, cid)
+        quiz = client.get(f"/quizzes/chapter/{cid}", headers=headers).json()
+
+        r = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers, json={"answers": [0]})
+        assert r.status_code == 422
+
+
+class TestFeedback:
+    def test_submit_and_admin_review(self, client, make_user):
+        admin, admin_h = make_user("admin")
+        student, student_h = make_user("student")
+
+        fb = client.post("/feedback/", headers=student_h, json={
+            "category": "bug", "message": "Something broke", "rating": 3,
+        })
+        assert fb.status_code == 201
+
+        r = client.get("/feedback/", headers=student_h)
+        assert r.status_code == 403  # not admin
+
+        r = client.get("/feedback/", headers=admin_h)
+        assert len(r.json()) >= 1
+
+        fid = fb.json()["id"]
+        r = client.patch(f"/feedback/{fid}/status", headers=admin_h, params={"new_status": "resolved"})
+        assert r.json()["status"] == "resolved"
+
+
+class TestHealthAndCaching:
+    def test_health_check(self, client):
+        r = client.get("/health")
+        assert r.status_code == 200
+        assert r.json()["database"] == "ok"
+
+    def test_content_library_cache_invalidates_on_write(self, client, make_user):
+        admin, headers = make_user("admin")
+        client.post("/content-library/seed", headers=headers)
+
+        before = len(client.get("/content-library/", headers=headers, params={"limit": 200}).json())
+        client.post("/content-library/", headers=headers, json={
+            "title": "New", "content_type": "story", "subject": "Science", "class_name": "Class 6",
+        })
+        after = len(client.get("/content-library/", headers=headers, params={"limit": 200}).json())
+        assert after == before + 1

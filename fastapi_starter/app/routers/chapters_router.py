@@ -30,6 +30,7 @@ from ..services.customization_service import customize_for_chapter
 from ..services.content_generation_service import decide_content_types, generate_content, validate_generated_content
 from ..services.video_rendering_service import render_video, VideoRenderingError
 from ..services.notification_service import notify
+from ..services.access_control_service import can_access_chapter
 from .auth_router import get_current_user
 
 logger = logging.getLogger("app.chapters")
@@ -359,7 +360,7 @@ def get_chapter_status(
     chapter = db.query(models.Chapter).filter(models.Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
-    if chapter.uploaded_by != current_user.id:
+    if not can_access_chapter(db, chapter, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this chapter")
     return chapter
 
@@ -377,7 +378,7 @@ def get_chapter_pipeline_status(
     chapter = db.query(models.Chapter).filter(models.Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
-    if chapter.uploaded_by != current_user.id:
+    if not can_access_chapter(db, chapter, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this chapter")
 
     matches = db.query(models.ContentMatch).filter(models.ContentMatch.chapter_id == chapter_id).all()
@@ -418,7 +419,7 @@ def get_chapter_brief(
     chapter = db.query(models.Chapter).filter(models.Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
-    if chapter.uploaded_by != current_user.id:
+    if not can_access_chapter(db, chapter, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this chapter")
 
     brief = (
@@ -456,7 +457,7 @@ def get_chapter_matches(
     chapter = db.query(models.Chapter).filter(models.Chapter.id == chapter_id).first()
     if not chapter:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chapter not found")
-    if chapter.uploaded_by != current_user.id:
+    if not can_access_chapter(db, chapter, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this chapter")
 
     matches = (

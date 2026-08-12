@@ -427,3 +427,128 @@ class SharedContentOut(BaseModel):
     content: Optional[ContentItemOut] = None
     message: Optional[str] = None
     created_at: datetime.datetime
+
+
+# --- Classrooms + Homework (Week 12) ---
+
+class ClassroomCreate(BaseModel):
+    name: str
+    subject: str
+    class_name: str
+
+
+class ClassroomOut(BaseModel):
+    id: int
+    name: str
+    subject: str
+    class_name: str
+    student_count: int = 0
+    created_at: datetime.datetime
+
+
+class EnrollStudentRequest(BaseModel):
+    student_user_id: int
+
+
+class StudentOut(BaseModel):
+    id: int
+    full_name: str
+    email: str
+
+
+class HomeworkCreate(BaseModel):
+    """Exactly one of chapter_id/content_item_id should be set - checked in
+    the route (not here) since Pydantic v2 makes single-field validators
+    for cross-field checks unnecessarily awkward."""
+    title: str
+    message: Optional[str] = None
+    due_date: Optional[datetime.datetime] = None
+    chapter_id: Optional[int] = None
+    content_item_id: Optional[int] = None
+
+
+class HomeworkOut(BaseModel):
+    id: int
+    classroom_id: int
+    title: str
+    message: Optional[str] = None
+    due_date: Optional[datetime.datetime] = None
+    chapter_id: Optional[int] = None
+    content_item_id: Optional[int] = None
+    created_at: datetime.datetime
+
+
+# --- Games (Week 13) ---
+
+class ConceptMatchGameOut(BaseModel):
+    chapter_id: int
+    chapter_name: str
+    pairs: list  # [{"concept": str, "clue": str}, ...]
+
+
+class MemoryGameOut(BaseModel):
+    chapter_id: int
+    chapter_name: str
+    cards: list  # [{"card_id": str, "concept": str}, ...] - each concept appears twice, pre-shuffled
+
+
+# --- Quizzes (Week 14) ---
+
+class QuizQuestionPublic(BaseModel):
+    """What a learner sees BEFORE submitting - no correct answer revealed."""
+    question_id: int
+    question_text: str
+    options: list
+
+
+class QuizOut(BaseModel):
+    quiz_id: int
+    chapter_id: int
+    chapter_name: str
+    questions: list  # list[QuizQuestionPublic]
+
+
+class QuizSubmitRequest(BaseModel):
+    answers: list  # list[int], one option index per question, in question order
+
+
+class QuizResultOut(BaseModel):
+    attempt_number: int
+    score: int
+    total_questions: int
+    correct_indices: list  # the right answer for each question, revealed after submitting
+
+
+class QuizAttemptOut(BaseModel):
+    attempt_number: int
+    score: int
+    total_questions: int
+    created_at: datetime.datetime
+
+
+# --- Feedback (Week 16) ---
+
+class FeedbackCreate(BaseModel):
+    category: str = "general"
+    message: str
+    rating: Optional[int] = Field(None, ge=1, le=5)
+
+    @field_validator("category")
+    @classmethod
+    def check_category(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("bug", "feature_request", "general"):
+            raise ValueError("category must be one of: bug, feature_request, general")
+        return v
+
+
+class FeedbackOut(BaseModel):
+    id: int
+    category: str
+    message: str
+    rating: Optional[int] = None
+    status: str
+    created_at: datetime.datetime
+
+    class Config:
+        from_attributes = True

@@ -19,8 +19,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
-from ..database import get_db
+from ..database import get_db, SessionLocal
 from ..config import settings
+from ..cache import cached, clear_cache
 from ..services.notification_service import notify
 from .auth_router import get_current_user, require_admin
 from ..seed_content_library import seed_content_library
@@ -96,6 +97,7 @@ def create_content_item(
     )
     db.add(item)
     db.commit()
+    clear_cache()  # library changed - drop the cached listing
     db.refresh(item)
     return _to_out(item)
 
@@ -117,31 +119,50 @@ def list_content_items(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    q = db.query(models.ContentItem).options(joinedload(models.ContentItem.tags))
+    # Week 15: this is the most-hit read endpoint in the app (every
+    # student/teacher browsing content), and the library barely changes
+    # minute-to-minute - a short TTL cache cuts DB load noticeably. Uses
+    # its own DB session (not the per-request injected one) since the
+    # cache needs to outlive any single request.
+    results = _cached_list_content_items(subject, class_name, content_type, tag, search, limit, offset)
+    return [schemas.ContentItemOut(**r) for r in results]
 
-    if subject:
-        q = q.filter(models.ContentItem.subject.ilike(subject))
-    if class_name:
-        q = q.filter(models.ContentItem.class_name.ilike(class_name))
-    if content_type:
-        q = q.filter(models.ContentItem.content_type == content_type.strip().lower())
-    if tag:
-        q = q.join(models.ContentItem.tags).filter(models.ContentTag.name == tag.strip().lower())
-    if search:
-        like = f"%{search}%"
-        q = q.filter(
-            (models.ContentItem.title.ilike(like)) | (models.ContentItem.description.ilike(like))
+
+@cached(ttl_seconds=30)
+def _cached_list_content_items(
+    subject: Optional[str], class_name: Optional[str], content_type: Optional[str],
+    tag: Optional[str], search: Optional[str], limit: int, offset: int,
+) -> list:
+    db = SessionLocal()
+    try:
+        q = db.query(models.ContentItem).options(joinedload(models.ContentItem.tags))
+
+        if subject:
+            q = q.filter(models.ContentItem.subject.ilike(subject))
+        if class_name:
+            q = q.filter(models.ContentItem.class_name.ilike(class_name))
+        if content_type:
+            q = q.filter(models.ContentItem.content_type == content_type.strip().lower())
+        if tag:
+            q = q.join(models.ContentItem.tags).filter(models.ContentTag.name == tag.strip().lower())
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                (models.ContentItem.title.ilike(like)) | (models.ContentItem.description.ilike(like))
+            )
+
+        items = (
+            q.order_by(models.ContentItem.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
         )
-
-    items = (
-        q.order_by(models.ContentItem.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
-    return [_to_out(i) for i in items]
+        # Serialize to plain dicts (not ORM objects) so the cached value
+        # survives after this session closes.
+        return [_to_out(i).model_dump() for i in items]
+    finally:
+        db.close()
 
 
 # =========================================================
@@ -198,6 +219,7 @@ def update_content_item(
     item.is_seed_placeholder = False
 
     db.commit()
+    clear_cache()  # library changed - drop the cached listing
     db.refresh(item)
     return _to_out(item)
 
@@ -220,6 +242,7 @@ def delete_content_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content item not found")
     db.delete(item)
     db.commit()
+    clear_cache()  # library changed - drop the cached listing
     return {"message": "Content item deleted"}
 
 
@@ -272,6 +295,7 @@ def create_share_link(
     )
     db.add(link)
     db.commit()
+    clear_cache()  # library changed - drop the cached listing
     db.refresh(link)
 
     return schemas.ShareLinkOut(
@@ -327,6 +351,7 @@ def share_with_classroom(
         shared_count += 1
 
     db.commit()
+    clear_cache()  # library changed - drop the cached listing
     detail = f"Shared with {shared_count} student(s)."
     if skipped:
         detail += f" Skipped {len(skipped)} invalid/non-student ID(s): {skipped}."

@@ -1,6 +1,7 @@
 import logging
 import traceback
 import os
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -15,7 +16,7 @@ from .database import engine, SessionLocal
 from .routers import (
     auth_router, items_router, chapters_router, dashboard_router,
     content_library_router, notifications_router, progress_router, children_router,
-    sharing_router,
+    sharing_router, classrooms_router, games_router, quizzes_router, feedback_router,
 )
 from .config import settings
 from .rate_limiter import limiter
@@ -124,8 +125,10 @@ async def add_security_headers(request: Request, call_next):
 # ---------- Request logging ----------
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    start = time.monotonic()
     response = await call_next(request)
-    logger.info("%s %s -> %s", request.method, request.url.path, response.status_code)
+    duration_ms = (time.monotonic() - start) * 1000
+    logger.info("%s %s -> %s (%.1fms)", request.method, request.url.path, response.status_code, duration_ms)
     return response
 
 
@@ -155,6 +158,10 @@ app.include_router(notifications_router.router)
 app.include_router(progress_router.router)
 app.include_router(children_router.router)
 app.include_router(sharing_router.router)
+app.include_router(classrooms_router.router)
+app.include_router(games_router.router)
+app.include_router(quizzes_router.router)
+app.include_router(feedback_router.router)
 
 
 @app.get("/")
