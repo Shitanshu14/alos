@@ -37,8 +37,50 @@ quizzes, deployment/hardening) are not started yet.
 | 16 | Deployment configs, monitoring/logging, feedback intake | ✅ Done |
 
 **All 16 weeks of the backend checklist are complete and tested** - see
-`tests/` for the full pytest suite (37 tests, all passing) and
+`tests/` for the full pytest suite (41 tests, all passing) and
 `DEPLOYMENT.md` for how to actually put this online.
+
+A full endpoint-by-endpoint edge-case audit (71 scenarios: invalid input,
+IDOR/cross-user access attempts, boundary values, malformed data) was also
+run across every router - see the tracker spreadsheet's "API Endpoint
+Testing" sheet for the full breakdown. It found and fixed 3 more bugs
+(email case-sensitivity, whitespace-only names, and out-of-range quiz
+answer indices) on top of the security review below.
+
+---
+
+## Security
+
+A focused security review found and fixed the following (all covered by
+regression tests in `tests/`):
+
+- **Fixed (critical):** the signup endpoint originally allowed `role: "admin"`
+  - anyone could self-register as an admin and get full content-library +
+  feedback access. Admin is no longer a valid signup role; create one via
+  `python -m app.create_admin` instead (trusted operator, direct DB access only).
+- **Fixed:** the app would silently run in production with the default
+  placeholder `SECRET_KEY` if `.env` wasn't configured, letting anyone forge
+  valid login tokens. It now refuses to start in production with a missing/weak
+  key (see `config.py`).
+- **Fixed:** only `/auth/login` was rate-limited. Signup, forgot-password, and
+  chapter-upload (which triggers expensive background processing, including
+  video rendering) were wide open to abuse. All four now have rate limits
+  (see `.env.example` for the settings).
+- **Fixed:** chapter upload had no role check - any logged-in account
+  (including students) could trigger the processing pipeline. Restricted to
+  teacher/school accounts.
+- **Fixed:** request bodies had no length limits on free-text fields (name,
+  messages, chapter titles, etc.) - a minor DoS/storage-bloat vector, and
+  unnecessary stored-XSS blast radius if the frontend ever renders this text
+  unescaped. Reasonable max lengths added throughout `schemas.py`.
+
+**Known gaps not yet addressed** (lower severity, worth doing before a real
+public launch): email verification is tracked but never enforced anywhere;
+file uploads are validated by extension only, not by inspecting actual file
+content/magic bytes; there's no CSRF protection layer (acceptable for a
+token-in-header API consumed by a JS frontend, but worth confirming against
+your specific frontend's auth-storage approach); dependency versions haven't
+been audited for known CVEs (run `pip audit` before launch).
 
 Everything in the "Done" rows has been tested end-to-end (see "Running the
 tests" below) — not just written, actually run and checked.

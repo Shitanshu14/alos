@@ -16,7 +16,7 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -31,6 +31,7 @@ from ..services.content_generation_service import decide_content_types, generate
 from ..services.video_rendering_service import render_video, VideoRenderingError
 from ..services.notification_service import notify
 from ..services.access_control_service import can_access_chapter
+from ..rate_limiter import limiter
 from .auth_router import get_current_user
 
 logger = logging.getLogger("app.chapters")
@@ -255,7 +256,9 @@ def _process_chapter(chapter_id: int) -> None:
     status_code=status.HTTP_201_CREATED,
     summary="Upload a chapter (PDF/DOCX) to start the ALOS pipeline",
 )
+@limiter.limit(settings.CHAPTER_UPLOAD_RATE_LIMIT)
 async def upload_chapter(
+    request: Request,
     background_tasks: BackgroundTasks,
     class_name: str = Form(..., description="e.g. 'Class 6'"),
     subject: str = Form(..., description="e.g. 'Science'"),
@@ -264,7 +267,20 @@ async def upload_chapter(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # --- Validate basic text fields aren't empty/whitespace ---
+    # Upload triggers an expensive background pipeline (text extraction,
+    # matching, and possibly real video rendering via ffmpeg/TTS) - only
+    # teacher/school accounts should be able to kick that off, matching
+    # the feature's intended use (this also caps abuse/resource-exhaustion
+    # risk, on top of the rate limit above).
+    if current_user.role not in ("teacher", "school"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teacher/school accounts can upload chapters",
+        )
+    # --- Validate basic text fields aren't empty/whitespace, and aren't
+    # absurdly long (these get embedded into generated video slides,
+    # notification text, etc. - an unbounded length is both a minor DoS
+    # vector and can break the video slide layout) ---
     class_name = class_name.strip()
     subject = subject.strip()
     chapter_name = chapter_name.strip()
@@ -272,6 +288,11 @@ async def upload_chapter(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="class_name, subject, and chapter_name cannot be empty",
+        )
+    if len(class_name) > 50 or len(subject) > 100 or len(chapter_name) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="class_name (max 50), subject (max 100), or chapter_name (max 200) is too long",
         )
 
     # --- Validate file type ---

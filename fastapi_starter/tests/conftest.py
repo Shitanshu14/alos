@@ -19,11 +19,15 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_tmp_db_path}")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("GENERATED_MEDIA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("UPLOAD_DIR", tempfile.mkdtemp())
-# The real app limits login to 5/minute per IP (brute-force protection).
-# The test suite legitimately logs in far more than that (many users,
-# many tests) from a single "IP" (the TestClient), so relax it here only -
-# production still uses the real 5/minute default from config.py.
+# The real app rate-limits login (5/min), signup (10/hour), forgot-password
+# (5/hour), and chapter-upload (20/hour) per IP - brute-force/abuse
+# protection. The test suite legitimately exceeds all of these from a
+# single "IP" (the TestClient) across many tests, so relax them here only -
+# production still uses the real strict defaults from config.py.
 os.environ.setdefault("LOGIN_RATE_LIMIT", "1000/minute")
+os.environ.setdefault("SIGNUP_RATE_LIMIT", "1000/minute")
+os.environ.setdefault("FORGOT_PASSWORD_RATE_LIMIT", "1000/minute")
+os.environ.setdefault("CHAPTER_UPLOAD_RATE_LIMIT", "1000/minute")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,17 +46,43 @@ def make_user(client):
     """Signs up + logs in a user, returns (user_dict, auth_headers).
     Uses a random suffix (not a per-test counter) for the email/phone,
     since the test DB persists across the whole session - a counter that
-    resets each test would collide across different test functions."""
+    resets each test would collide across different test functions.
+
+    "admin" is special-cased: it's no longer self-registerable through
+    the public /auth/signup endpoint (that was a real privilege-escalation
+    bug - see app/create_admin.py for the real, trusted-operator-only way
+    to create one). Tests create admin accounts the same way: directly in
+    the DB, bypassing the public API, exactly like a real deployment would.
+    """
     import uuid
 
     def _make(role: str, email: str = None):
         suffix = uuid.uuid4().hex[:10]
         email = email or f"{role}_{suffix}@test.com"
         phone = f"9{suffix[:9]}"
-        client.post("/auth/signup", json={
-            "full_name": f"{role.title()} {suffix[:4]}",
-            "email": email, "phone": phone, "password": "Pass@123", "role": role,
-        })
+
+        if role == "admin":
+            from app.database import SessionLocal
+            from app import models, auth as auth_module
+
+            db = SessionLocal()
+            try:
+                admin = models.User(
+                    full_name=f"Admin {suffix[:4]}",
+                    email=email, phone=phone,
+                    hashed_password=auth_module.hash_password("Pass@123"),
+                    role="admin", is_verified=True,
+                )
+                db.add(admin)
+                db.commit()
+            finally:
+                db.close()
+        else:
+            client.post("/auth/signup", json={
+                "full_name": f"{role.title()} {suffix[:4]}",
+                "email": email, "phone": phone, "password": "Pass@123", "role": role,
+            })
+
         login = client.post("/auth/login", json={"email": email, "password": "Pass@123"})
         token = login.json()["access_token"]
         user = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"}).json()

@@ -48,6 +48,9 @@ class Settings:
 
     # --- Rate limiting ---
     LOGIN_RATE_LIMIT: str = os.getenv("LOGIN_RATE_LIMIT", "5/minute")
+    SIGNUP_RATE_LIMIT: str = os.getenv("SIGNUP_RATE_LIMIT", "10/hour")
+    FORGOT_PASSWORD_RATE_LIMIT: str = os.getenv("FORGOT_PASSWORD_RATE_LIMIT", "5/hour")
+    CHAPTER_UPLOAD_RATE_LIMIT: str = os.getenv("CHAPTER_UPLOAD_RATE_LIMIT", "20/hour")
 
     # --- Email / SMTP ---
     # If this isn't configured, emails will be printed to the console/log instead (dev mode).
@@ -79,3 +82,20 @@ class Settings:
 
 
 settings = Settings()
+
+
+# --- Security guard: never let the app run in production with the
+# default/placeholder SECRET_KEY. If this shipped unnoticed, every JWT
+# the app issues could be forged by anyone who read this public source
+# code - this check turns a silent vulnerability into a loud startup
+# failure instead. ---
+_INSECURE_DEFAULT_SECRET = "change-this-secret-key-in-production"
+if settings.ENV == "production" and (
+    settings.SECRET_KEY == _INSECURE_DEFAULT_SECRET or len(settings.SECRET_KEY) < 32
+):
+    raise RuntimeError(
+        "Refusing to start in production with an insecure SECRET_KEY. "
+        "Set a long, random SECRET_KEY in your environment (e.g. "
+        "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"`) "
+        "before deploying."
+    )

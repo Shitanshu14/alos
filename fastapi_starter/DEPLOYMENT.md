@@ -52,6 +52,22 @@ skip Docker entirely:
   is skipped — it fails gracefully and falls back to script-only content
   (see `video_rendering_service.py`).
 
+## Creating the first admin account
+
+Admin accounts (needed for content library management and feedback review)
+can **not** be created through the public signup API - that's a deliberate
+security fix (see README's Security section). After deploying, create one
+by running this once, on the server / against the production database:
+
+```
+python -m app.create_admin --email you@example.com --password "SomeStrongPass@123"
+```
+
+Or run it interactively (prompts for each value, hides the password input):
+```
+python -m app.create_admin
+```
+
 ## Environment variables
 
 Copy `.env.example` to `.env` and fill in. At minimum for production:

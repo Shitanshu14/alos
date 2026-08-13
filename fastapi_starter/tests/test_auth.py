@@ -4,9 +4,19 @@ import pytest
 
 class TestAuth:
     def test_signup_all_roles(self, client, make_user):
-        for role in ("teacher", "parent", "student", "school", "admin"):
+        for role in ("teacher", "parent", "student", "school"):
             user, _ = make_user(role)
             assert user["role"] == role
+
+    def test_admin_role_rejected_at_public_signup(self, client):
+        """Security regression test: admin must NEVER be self-registerable
+        through the public signup endpoint - see app/create_admin.py for
+        the correct (trusted-operator-only) way to create one."""
+        r = client.post("/auth/signup", json={
+            "full_name": "Wannabe Admin", "email": "wannabe_admin@test.com", "phone": "9555555555",
+            "password": "Pass@123", "role": "admin",
+        })
+        assert r.status_code == 422
 
     def test_invalid_role_rejected(self, client):
         r = client.post("/auth/signup", json={
@@ -29,6 +39,35 @@ class TestAuth:
             "password": "weak", "role": "teacher",
         })
         assert r.status_code == 422
+
+    def test_whitespace_only_name_rejected(self, client):
+        """Regression test: signup previously accepted a name that was
+        just whitespace (e.g. '   ')."""
+        r = client.post("/auth/signup", json={
+            "full_name": "   ", "email": "wsname@test.com", "phone": "9888888888",
+            "password": "Pass@123", "role": "teacher",
+        })
+        assert r.status_code == 422
+
+    def test_email_is_case_insensitive(self, client):
+        """Regression test: 'User@Test.com' and 'user@test.com' were
+        previously treated as different accounts, so someone could sign
+        up twice with the same real email, and login could fail if the
+        casing didn't exactly match what was stored at signup."""
+        client.post("/auth/signup", json={
+            "full_name": "Case Test", "email": "MixedCase@Test.com", "phone": "9777000111",
+            "password": "Pass@123", "role": "teacher",
+        })
+        # Same email, different case - signup should be rejected as a duplicate
+        r = client.post("/auth/signup", json={
+            "full_name": "Dup", "email": "mixedcase@test.com", "phone": "9777000112",
+            "password": "Pass@123", "role": "teacher",
+        })
+        assert r.status_code == 409
+
+        # Login should work regardless of the casing used
+        r = client.post("/auth/login", json={"email": "MIXEDCASE@TEST.COM", "password": "Pass@123"})
+        assert r.status_code == 200
 
     def test_wrong_password_rejected(self, client, make_user):
         user, headers = make_user("teacher", email="wp@test.com")

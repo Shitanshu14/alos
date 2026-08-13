@@ -25,7 +25,8 @@ security_scheme = HTTPBearer()
 # SIGNUP
 # =========================================================
 @router.post("/signup", response_model=schemas.SignupResponse, status_code=status.HTTP_201_CREATED)
-def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
+@limiter.limit(settings.SIGNUP_RATE_LIMIT)
+def signup(request: Request, user: schemas.UserCreate, db: Session = Depends(get_db)):
     existing_email = db.query(models.User).filter(models.User.email == user.email).first()
     if existing_email:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This email is already registered")
@@ -161,7 +162,8 @@ def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
 # FORGOT PASSWORD
 # =========================================================
 @router.post("/forgot-password", response_model=schemas.MessageResponse)
-def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit(settings.FORGOT_PASSWORD_RATE_LIMIT)
+def forgot_password(request: Request, payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
     # Whether SMTP is configured is a global setting (not per-user), so checking it
     # here doesn't leak whether this particular email is registered.
     if settings.SMTP_HOST:

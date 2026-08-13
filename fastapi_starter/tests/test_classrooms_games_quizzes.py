@@ -102,6 +102,29 @@ class TestQuizzes:
         r = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers, json={"answers": [0]})
         assert r.status_code == 422
 
+    def test_out_of_range_answer_index_rejected(self, client, make_user, sample_docx):
+        """Regression test: submitting an answer index outside the valid
+        option range (e.g. 99 when there are only 4 options), or a
+        negative index, used to be silently accepted and just scored as
+        wrong instead of being rejected as malformed input."""
+        teacher, headers = make_user("teacher")
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=headers,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "P"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, headers, cid)
+        quiz = client.get(f"/quizzes/chapter/{cid}", headers=headers).json()
+        n = len(quiz["questions"])
+
+        r = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers, json={"answers": [99] * n})
+        assert r.status_code == 422
+
+        r = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers, json={"answers": [-1] * n})
+        assert r.status_code == 422
+
 
 class TestFeedback:
     def test_submit_and_admin_review(self, client, make_user):

@@ -17,8 +17,16 @@ PASSWORD_REGEX_SPECIAL = re.compile(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]")
 #   parent  - will see their children's learning progress (Week 10)
 #   student - will see assigned content + progress (Week 8-9)
 #   school  - institution-level account, same view as teacher for now
-#   admin   - internal/ops use only
-ALLOWED_ROLES = {"teacher", "parent", "student", "school", "admin"}
+#
+# "admin" is DELIBERATELY EXCLUDED from this set. Admin accounts have
+# access to content library management, feedback review, and other
+# sensitive operations - they must never be self-registerable through
+# the public signup endpoint. Create admin accounts directly in the
+# database (or a one-off trusted script), not through the API.
+ALLOWED_SIGNUP_ROLES = {"teacher", "parent", "student", "school"}
+# Includes "admin" - used for validating a role value read back OUT of the
+# system (e.g. an existing user's role), never for validating signup input.
+ALL_ROLES = ALLOWED_SIGNUP_ROLES | {"admin"}
 
 
 def validate_password_strength(password: str) -> str:
@@ -38,12 +46,33 @@ def validate_password_strength(password: str) -> str:
 
 
 # --- User related schemas ---
+def _normalize_email(v: str) -> str:
+    """Emails are case-insensitive by spec (the domain part always is; in
+    practice virtually every real mail provider treats the local part the
+    same way too) - normalize to lowercase everywhere so 'User@Test.com'
+    and 'user@test.com' are always treated as the same account."""
+    return v.strip().lower()
+
+
 class UserCreate(BaseModel):
-    full_name: str
+    full_name: str = Field(..., min_length=1, max_length=150)
     email: EmailStr
-    phone: str
-    password: str
-    role: str  # required - must be one of ALLOWED_ROLES (teacher/parent/student/school/admin)
+    phone: str = Field(..., min_length=5, max_length=20)
+    password: str = Field(..., max_length=128)  # min length enforced by check_password below
+    role: str  # required - must be one of ALLOWED_SIGNUP_ROLES (admin is NOT self-registerable)
+
+    @field_validator("full_name")
+    @classmethod
+    def check_full_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("full_name cannot be empty or just whitespace")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return _normalize_email(v)
 
     @field_validator("password")
     @classmethod
@@ -54,8 +83,8 @@ class UserCreate(BaseModel):
     @classmethod
     def check_role(cls, v: str) -> str:
         v = v.strip().lower()
-        if v not in ALLOWED_ROLES:
-            raise ValueError(f"Role must be one of: {', '.join(sorted(ALLOWED_ROLES))}")
+        if v not in ALLOWED_SIGNUP_ROLES:
+            raise ValueError(f"Role must be one of: {', '.join(sorted(ALLOWED_SIGNUP_ROLES))}")
         return v
 
 
@@ -81,6 +110,11 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
 
 class Token(BaseModel):
     access_token: str
@@ -99,6 +133,11 @@ class LogoutRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return _normalize_email(v)
 
 
 class ResetPasswordRequest(BaseModel):
@@ -205,14 +244,14 @@ def _normalize_tags(tags: list[str]) -> list[str]:
 
 
 class ContentItemCreate(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=200)
     content_type: str
-    subject: str
-    class_name: str
-    description: Optional[str] = None
-    body: Optional[str] = None        # story/poem text
-    media_url: Optional[str] = None   # video/cartoon link
-    tags: list[str] = []
+    subject: str = Field(..., min_length=1, max_length=100)
+    class_name: str = Field(..., min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=1000)
+    body: Optional[str] = Field(None, max_length=20000)        # story/poem text
+    media_url: Optional[str] = Field(None, max_length=1000)   # video/cartoon link
+    tags: list[str] = Field(default_factory=list, max_length=30)
 
     @field_validator("content_type")
     @classmethod
@@ -352,12 +391,12 @@ class CompletedChapterOut(BaseModel):
 # --- Parent-child (Week 10) ---
 
 class ChildCreate(BaseModel):
-    name: str
-    class_name: Optional[str] = None
+    name: str = Field(..., min_length=1, max_length=150)
+    class_name: Optional[str] = Field(None, max_length=50)
 
 
 class ChildClassUpdate(BaseModel):
-    class_name: str
+    class_name: str = Field(..., min_length=1, max_length=50)
 
 
 class ChildOut(BaseModel):
@@ -432,9 +471,9 @@ class SharedContentOut(BaseModel):
 # --- Classrooms + Homework (Week 12) ---
 
 class ClassroomCreate(BaseModel):
-    name: str
-    subject: str
-    class_name: str
+    name: str = Field(..., min_length=1, max_length=150)
+    subject: str = Field(..., min_length=1, max_length=100)
+    class_name: str = Field(..., min_length=1, max_length=50)
 
 
 class ClassroomOut(BaseModel):
@@ -460,8 +499,8 @@ class HomeworkCreate(BaseModel):
     """Exactly one of chapter_id/content_item_id should be set - checked in
     the route (not here) since Pydantic v2 makes single-field validators
     for cross-field checks unnecessarily awkward."""
-    title: str
-    message: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    message: Optional[str] = Field(None, max_length=2000)
     due_date: Optional[datetime.datetime] = None
     chapter_id: Optional[int] = None
     content_item_id: Optional[int] = None
@@ -530,7 +569,7 @@ class QuizAttemptOut(BaseModel):
 
 class FeedbackCreate(BaseModel):
     category: str = "general"
-    message: str
+    message: str = Field(..., min_length=1, max_length=5000)
     rating: Optional[int] = Field(None, ge=1, le=5)
 
     @field_validator("category")

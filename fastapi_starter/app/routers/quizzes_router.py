@@ -117,6 +117,19 @@ def submit_quiz(
             detail=f"Expected {len(questions)} answers, got {len(payload.answers)}",
         )
 
+    # Each answer must be a valid index into its question's options list -
+    # reject garbage/negative/out-of-range values with a clear error
+    # instead of silently treating them as "wrong" (no scoring exploit
+    # either way, since an invalid index can never equal correct_index,
+    # but silently accepting malformed input is still worth rejecting).
+    for i, (given, question) in enumerate(zip(payload.answers, questions)):
+        option_count = len(json.loads(question.options))
+        if not isinstance(given, int) or given < 0 or given >= option_count:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Answer at position {i} must be an integer between 0 and {option_count - 1}",
+            )
+
     correct_indices = [q.correct_index for q in questions]
     score = sum(1 for given, correct in zip(payload.answers, correct_indices) if given == correct)
 
