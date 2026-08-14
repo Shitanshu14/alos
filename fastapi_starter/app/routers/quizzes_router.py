@@ -10,6 +10,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from .. import models, schemas
 from ..database import get_db
@@ -56,17 +57,33 @@ def get_chapter_quiz(
 
         quiz = models.Quiz(chapter_id=chapter_id)
         db.add(quiz)
-        db.flush()
-        for i, q in enumerate(generated_questions):
-            db.add(models.QuizQuestion(
-                quiz_id=quiz.id,
-                question_text=q["question_text"],
-                options=json.dumps(q["options"]),
-                correct_index=q["correct_index"],
-                order=i,
-            ))
-        db.commit()
-        db.refresh(quiz)
+        try:
+            db.flush()
+            for i, q in enumerate(generated_questions):
+                db.add(models.QuizQuestion(
+                    quiz_id=quiz.id,
+                    question_text=q["question_text"],
+                    options=json.dumps(q["options"]),
+                    correct_index=q["correct_index"],
+                    order=i,
+                ))
+            db.commit()
+            db.refresh(quiz)
+        except IntegrityError:
+            # Race condition: another concurrent request for the same
+            # chapter's quiz won and already created it (Quiz.chapter_id
+            # is unique) between our "does it exist" check and this
+            # insert - roll back our half-done insert and use theirs
+            # instead of crashing with a 500.
+            db.rollback()
+            quiz = db.query(models.Quiz).filter(models.Quiz.chapter_id == chapter_id).first()
+            if not quiz:
+                # Extremely unlikely (would mean the other transaction
+                # rolled back too), but don't silently succeed with nothing.
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Could not create or find a quiz for this chapter - please retry",
+                )
 
     questions = (
         db.query(models.QuizQuestion)

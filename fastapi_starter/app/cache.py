@@ -22,6 +22,29 @@ import threading
 _store = {}
 _lock = threading.Lock()
 
+# Without this cap, _store would grow forever - every distinct combination
+# of filter arguments (e.g. content-library search has 7 different filter
+# params) creates a new cache key, and expired entries were never being
+# removed, only overwritten if that exact same combination was queried
+# again. In a long-running production process, that's an unbounded memory
+# leak. This keeps the cache small and self-cleaning.
+_MAX_ENTRIES = 1000
+
+
+def _evict_if_needed():
+    """Called with _lock already held. If the cache has grown past
+    _MAX_ENTRIES, first drop anything already expired; if that's not
+    enough, clear it entirely (simple and safe - everything just gets
+    recomputed on the next request, same as a cold cache)."""
+    if len(_store) <= _MAX_ENTRIES:
+        return
+    now = time.monotonic()
+    expired_keys = [k for k, (_, expires_at) in _store.items() if expires_at <= now]
+    for k in expired_keys:
+        del _store[k]
+    if len(_store) > _MAX_ENTRIES:
+        _store.clear()
+
 
 def cached(ttl_seconds: int = 30):
     """Caches a function's return value per distinct set of arguments for
@@ -43,6 +66,7 @@ def cached(ttl_seconds: int = 30):
 
             with _lock:
                 _store[key] = (result, now + ttl_seconds)
+                _evict_if_needed()
 
             return result
         return wrapper

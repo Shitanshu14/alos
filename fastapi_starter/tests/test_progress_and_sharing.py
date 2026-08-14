@@ -17,6 +17,37 @@ class TestNotificationsAndProgress:
         notifs = client.get("/notifications/", headers=headers).json()
         assert any("ready" in n["title"].lower() for n in notifs)
 
+    def test_concurrent_progress_access_no_duplicate_rows(self, client, make_user):
+        """Regression test (Testing 2.0): concurrent first-time access to
+        the same content item used to silently create duplicate
+        ContentProgress rows (confirmed with 10 concurrent requests -> 2
+        rows instead of 1). No crash, so it went unnoticed - a real
+        silent data-corruption bug: whichever duplicate a later query
+        happened to pick could show stale/wrong progress."""
+        import threading
+
+        admin, admin_h = make_user("admin")
+        teacher, headers = make_user("teacher")
+        client.post("/content-library/seed", headers=admin_h)
+        item_id = client.get("/content-library/", headers=headers, params={"limit": 1}).json()[0]["id"]
+
+        results = []
+        def hit_access():
+            r = client.post(f"/progress/access/{item_id}", headers=headers)
+            results.append(r.status_code)
+
+        threads = [threading.Thread(target=hit_access) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(code == 200 for code in results)
+
+        history = client.get("/progress/history", headers=headers).json()
+        matching_rows = [h for h in history if h["content_item_id"] == item_id]
+        assert len(matching_rows) == 1, f"expected exactly 1 progress row, found {len(matching_rows)}"
+
     def test_progress_access_and_resume(self, client, make_user):
         admin, admin_h = make_user("admin")
         teacher, headers = make_user("teacher")

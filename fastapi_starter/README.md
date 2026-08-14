@@ -47,6 +47,27 @@ Testing" sheet for the full breakdown. It found and fixed 3 more bugs
 (email case-sensitivity, whitespace-only names, and out-of-range quiz
 answer indices) on top of the security review below.
 
+**"Testing 2.0"** went a level deeper - concurrency, resource leaks, and
+query performance, not just input validation. Found and fixed 8 more real
+bugs across two rounds (see the tracker's "Testing 2.0 - Deep Bugs" sheet):
+- **Three race conditions**, two causing crashes (quiz generation, 500
+  errors under concurrent access) and one causing **silent data
+  corruption** (duplicate progress rows with no error at all - the most
+  dangerous kind of bug, since nothing points at it happening). All three
+  reproduced with actual concurrent-thread tests, not just reasoning about
+  the code.
+- A resource leak where a failed video render left file handles open
+  indefinitely.
+- A memory leak where the response cache never evicted old entries.
+- Two N+1 query bugs - one of them was **38 SQL queries reduced to 2**
+  (measured directly) in the chapter-matching pipeline, which runs on
+  every single chapter upload.
+- A password-hashing correctness bug: bcrypt silently truncates passwords
+  past 72 bytes, so two different long passwords sharing the same first 72
+  bytes would both work for login - confirmed with a direct hash/verify
+  test, then fixed by rejecting overlong passwords instead of silently
+  weakening them.
+
 ---
 
 ## Security

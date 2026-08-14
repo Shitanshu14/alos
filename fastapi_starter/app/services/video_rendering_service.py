@@ -148,6 +148,7 @@ def render_video(chapter_name: str, script_body: str, output_dir: str) -> str:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     clips = []
+    final = None
     try:
         for i, scene_text in enumerate(scenes, start=1):
             slide_path = str(work_dir / f"slide_{i}.png")
@@ -171,9 +172,6 @@ def render_video(chapter_name: str, script_body: str, output_dir: str) -> str:
         final.write_videofile(
             str(output_path), fps=24, codec="libx264", audio_codec="aac", logger=None,
         )
-        final.close()
-        for c in clips:
-            c.close()
 
         return f"videos/{output_filename}"
 
@@ -181,6 +179,17 @@ def render_video(chapter_name: str, script_body: str, output_dir: str) -> str:
         logger.exception("Video rendering failed for chapter '%s'", chapter_name)
         raise VideoRenderingError(f"Video rendering failed: {exc}") from exc
     finally:
+        # Always close every clip - on both the success AND failure path.
+        # Previously this only ran after a successful render, so a
+        # mid-render failure (e.g. scene 3 of 5 erroring) left the
+        # already-created clips' file handles open indefinitely.
+        if final is not None:
+            final.close()
+        for c in clips:
+            try:
+                c.close()
+            except Exception:
+                pass  # best-effort - don't let cleanup itself raise
         # Clean up temp slide/audio files (keep only the final mp4)
         import shutil
         shutil.rmtree(work_dir, ignore_errors=True)

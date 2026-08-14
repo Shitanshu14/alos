@@ -89,6 +89,21 @@ class TestAuth:
         assert r.status_code == 200
         assert "access_token" in r.json()
 
+    def test_password_over_bcrypt_limit_rejected(self, client):
+        """Regression test (Testing 2.0): bcrypt silently truncates
+        passwords to 72 bytes - anything past that was previously
+        accepted at signup but ignored at hash time, meaning two
+        different passwords sharing the same first 72 bytes would both
+        successfully log in. Confirmed directly: hashed a 104-char
+        password, then verified successfully against a tampered version
+        that only differed after byte 72. Now rejected at signup instead."""
+        long_pw = "Aa1!" + "x" * 100  # 104 characters, way past bcrypt's 72-byte limit
+        r = client.post("/auth/signup", json={
+            "full_name": "Long PW", "email": "longpw2@test.com", "phone": "9666000111",
+            "password": long_pw, "role": "teacher",
+        })
+        assert r.status_code == 422
+
 
 class TestDashboard:
     def test_teacher_dashboard(self, client, make_user):

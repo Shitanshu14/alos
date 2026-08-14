@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from .. import models, schemas
@@ -494,11 +494,25 @@ def get_chapter_matches(
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
+    # Batch-fetch every matched content item (+ eager-load their tags) in
+    # ONE query instead of one query per match row (was up to 4 separate
+    # queries, plus another per-item query for tags).
+    content_item_ids = [m.content_item_id for m in matches if m.content_item_id]
+    items_by_id = {}
+    if content_item_ids:
+        items = (
+            db.query(models.ContentItem)
+            .options(joinedload(models.ContentItem.tags))
+            .filter(models.ContentItem.id.in_(content_item_ids))
+            .all()
+        )
+        items_by_id = {item.id: item for item in items}
+
     results = []
     for m in matches:
         content_item_out = None
         if m.content_item_id:
-            item = db.query(models.ContentItem).filter(models.ContentItem.id == m.content_item_id).first()
+            item = items_by_id.get(m.content_item_id)
             if item:
                 content_item_out = schemas.ContentItemOut(
                     id=item.id,

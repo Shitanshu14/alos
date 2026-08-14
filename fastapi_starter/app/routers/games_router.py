@@ -11,6 +11,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from .. import models, schemas
 from ..database import get_db
@@ -48,7 +49,22 @@ def _get_or_create_template(db: Session, chapter_id: int, game_type: str, build_
 
     data = build_fn()
     db.add(models.GameTemplate(chapter_id=chapter_id, game_type=game_type, data=serialize(data)))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Race condition: another concurrent request for the same game
+        # already created it (chapter_id+game_type is now unique) between
+        # our "does it exist" check and this insert - use theirs instead
+        # of crashing or leaving a duplicate row.
+        db.rollback()
+        existing = (
+            db.query(models.GameTemplate)
+            .filter(models.GameTemplate.chapter_id == chapter_id, models.GameTemplate.game_type == game_type)
+            .first()
+        )
+        if existing:
+            return deserialize(existing.data)
+        raise
     return data
 
 

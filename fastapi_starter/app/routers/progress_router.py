@@ -61,7 +61,9 @@ def get_or_create_progress(
     # get auto-resolved to on creation. Filtering by chapter_id=None here
     # would miss a previously-created row that resolved to a real chapter
     # id, causing progress to appear to "reset" on every repeat access.
-    progress = query.first()
+    # Order by id so if duplicates ever exist (see dedup below), we
+    # consistently prefer the oldest/original one.
+    progress = query.order_by(models.ContentProgress.id.asc()).first()
 
     if not progress:
         resolved_chapter_id = chapter_id
@@ -86,7 +88,37 @@ def get_or_create_progress(
             progress_percent=0,
         )
         db.add(progress)
-        db.flush()
+        db.commit()
+        db.refresh(progress)
+
+        # Self-healing race-condition guard: because chapter_id is
+        # nullable, a DB-level unique constraint can't reliably prevent
+        # two concurrent requests from both passing the "does it exist"
+        # check above and both inserting a row (NULL is never equal to
+        # NULL in SQL, so a unique index doesn't catch the common
+        # no-explicit-chapter case). Confirmed with a 10-concurrent-request
+        # test: duplicate rows were silently created with no error.
+        # Re-check right after commit and merge away any duplicate that
+        # snuck in, always keeping the oldest one so nothing already
+        # returned to a caller ever becomes invalid.
+        dupes = (
+            db.query(models.ContentProgress)
+            .filter(
+                models.ContentProgress.owner_type == owner_type,
+                models.ContentProgress.owner_id == owner_id,
+                models.ContentProgress.content_item_id == content_item.id,
+                models.ContentProgress.chapter_id == resolved_chapter_id,
+            )
+            .order_by(models.ContentProgress.id.asc())
+            .all()
+        )
+        if len(dupes) > 1:
+            progress = dupes[0]
+            for extra in dupes[1:]:
+                db.delete(extra)
+            db.commit()
+            db.refresh(progress)
+
     return progress
 
 

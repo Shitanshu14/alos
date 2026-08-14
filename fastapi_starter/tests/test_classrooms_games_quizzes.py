@@ -102,6 +102,37 @@ class TestQuizzes:
         r = client.post(f"/quizzes/{quiz['quiz_id']}/submit", headers=headers, json={"answers": [0]})
         assert r.status_code == 422
 
+    def test_concurrent_quiz_generation_no_crash(self, client, make_user, sample_docx):
+        """Regression test: two+ requests hitting GET /quizzes/chapter/{id}
+        at the same moment, before a quiz exists yet, used to race on
+        creating the Quiz row (unique per chapter) - the loser crashed
+        with an unhandled 500 IntegrityError instead of just returning
+        the quiz the winner created."""
+        import threading
+
+        teacher, headers = make_user("teacher")
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=headers,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "P"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, headers, cid)
+
+        results = []
+        def hit_quiz():
+            r = client.get(f"/quizzes/chapter/{cid}", headers=headers)
+            results.append(r.status_code)
+
+        threads = [threading.Thread(target=hit_quiz) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert all(code == 200 for code in results), f"got statuses: {results}"
+
     def test_out_of_range_answer_index_rejected(self, client, make_user, sample_docx):
         """Regression test: submitting an answer index outside the valid
         option range (e.g. 99 when there are only 4 options), or a

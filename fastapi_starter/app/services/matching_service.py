@@ -13,6 +13,8 @@ create something new instead of forcing a bad-fit match.
 """
 import logging
 
+from sqlalchemy.orm import joinedload
+
 from ..models import ContentItem
 
 logger = logging.getLogger("app.services.matching_service")
@@ -72,11 +74,16 @@ def find_best_matches(db, chapter, chapter_concepts: list) -> dict:
     """Returns, for each of the 4 content types:
     {"item": ContentItem|None, "score": float, "matched_concepts": list[str]}
     item is None when nothing reached MIN_MATCH_SCORE for that type."""
-    candidates = db.query(ContentItem).filter(ContentItem.subject == chapter.subject).all()
+    candidates = (
+        db.query(ContentItem)
+        .options(joinedload(ContentItem.tags))
+        .filter(ContentItem.subject == chapter.subject)
+        .all()
+    )
     # Fall back to the whole library if nothing matches the subject exactly
     # (e.g. a naming mismatch like "Social Studies" vs "Social Science")
     if not candidates:
-        candidates = db.query(ContentItem).all()
+        candidates = db.query(ContentItem).options(joinedload(ContentItem.tags)).all()
 
     results = {}
     for content_type in CONTENT_TYPES:

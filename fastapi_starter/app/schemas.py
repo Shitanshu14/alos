@@ -34,6 +34,15 @@ def validate_password_strength(password: str) -> str:
     number, and one special character."""
     if len(password) < 8:
         raise ValueError("Password must be at least 8 characters long")
+    # bcrypt (used in auth.py for hashing) only considers the first 72
+    # BYTES of a password - anything beyond that is silently ignored, not
+    # rejected. Without this check, two different passwords sharing the
+    # same first 72 bytes would both successfully log in, silently
+    # weakening any password longer than that. Checked in bytes (not
+    # characters) since multi-byte UTF-8 characters count as more than
+    # one byte against bcrypt's actual limit.
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError("Password must be at most 72 bytes long (bcrypt's limit) - roughly 72 characters for plain text")
     if not PASSWORD_REGEX_UPPER.search(password):
         raise ValueError("Password must contain at least one uppercase letter")
     if not PASSWORD_REGEX_LOWER.search(password):
