@@ -551,9 +551,7 @@ def list_my_chapters(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return (
-        db.query(models.Chapter)
-        .filter(models.Chapter.uploaded_by == current_user.id)
-        .order_by(models.Chapter.created_at.desc())
-        .all()
-    )
+    query = db.query(models.Chapter)
+    if current_user.role != "admin":
+        query = query.filter(models.Chapter.uploaded_by == current_user.id)
+    return query.order_by(models.Chapter.created_at.desc()).all()

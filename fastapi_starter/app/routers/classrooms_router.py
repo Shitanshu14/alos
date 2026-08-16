@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.access_control_service import is_admin
 from ..services.notification_service import notify
 from .auth_router import get_current_user
 
@@ -24,6 +25,8 @@ router = APIRouter(prefix="/classrooms", tags=["Classrooms"])
 
 
 def _require_teacher(user: models.User) -> None:
+    if is_admin(user):
+        return
     if user.role not in ("teacher", "school"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only teacher/school accounts can manage classrooms")
 
@@ -32,6 +35,8 @@ def _get_owned_classroom(classroom_id: int, user: models.User, db: Session) -> m
     classroom = db.query(models.Classroom).filter(models.Classroom.id == classroom_id).first()
     if not classroom:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Classroom not found")
+    if is_admin(user):
+        return classroom
     if classroom.teacher_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This classroom doesn't belong to your account")
     return classroom
@@ -80,7 +85,10 @@ def list_my_classrooms(
     db: Session = Depends(get_db),
 ):
     _require_teacher(current_user)
-    classrooms = db.query(models.Classroom).filter(models.Classroom.teacher_id == current_user.id).all()
+    query = db.query(models.Classroom)
+    if not is_admin(current_user):
+        query = query.filter(models.Classroom.teacher_id == current_user.id)
+    classrooms = query.all()
     results = []
     for c in classrooms:
         count = db.query(models.ClassroomEnrollment).filter(models.ClassroomEnrollment.classroom_id == c.id).count()
@@ -217,7 +225,7 @@ def list_homework(
     ).first() is not None
     is_student_member = current_user.role == "student" and _is_enrolled(classroom_id, current_user.id, db)
 
-    if not (is_owner or is_student_member):
+    if not (is_admin(current_user) or is_owner or is_student_member):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this classroom")
 
     return db.query(models.Homework).filter(models.Homework.classroom_id == classroom_id).order_by(models.Homework.created_at.desc()).all()
@@ -241,7 +249,7 @@ def get_classroom_content(
     ).first() is not None
     is_student_member = current_user.role == "student" and _is_enrolled(classroom_id, current_user.id, db)
 
-    if not (is_owner or is_student_member):
+    if not (is_admin(current_user) or is_owner or is_student_member):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this classroom")
 
     homework_rows = db.query(models.Homework).filter(models.Homework.classroom_id == classroom_id).all()

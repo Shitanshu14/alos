@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.access_control_service import is_admin
 from ..services.notification_service import notify
 from .auth_router import get_current_user
 
@@ -23,6 +24,8 @@ router = APIRouter(prefix="/children", tags=["Children"])
 
 
 def _require_parent(current_user: models.User) -> None:
+    if is_admin(current_user):
+        return
     if current_user.role != "parent":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only parent accounts can manage children")
 
@@ -31,6 +34,8 @@ def _get_owned_child(child_id: int, current_user: models.User, db: Session) -> m
     child = db.query(models.Child).filter(models.Child.id == child_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
+    if is_admin(current_user):
+        return child
     if child.parent_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This child doesn't belong to your account")
     return child
@@ -62,12 +67,10 @@ def list_children(
     db: Session = Depends(get_db),
 ):
     _require_parent(current_user)
-    return (
-        db.query(models.Child)
-        .filter(models.Child.parent_id == current_user.id)
-        .order_by(models.Child.created_at.asc())
-        .all()
-    )
+    query = db.query(models.Child)
+    if not is_admin(current_user):
+        query = query.filter(models.Child.parent_id == current_user.id)
+    return query.order_by(models.Child.created_at.asc()).all()
 
 
 # =========================================================
