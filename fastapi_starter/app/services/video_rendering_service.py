@@ -35,6 +35,16 @@ FONT_PATH_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
+# DejaVu Sans has no Devanagari glyphs at all - Hindi text rendered as
+# empty "tofu" boxes (confirmed via direct pixel-level testing: a
+# rendered Hindi sentence had only 6 unique colors in its text region,
+# vs 50-500+ for real glyphs). Noto Sans Devanagari covers Hindi/Marathi/
+# Sanskrit text properly - used automatically when the slide text
+# contains Devanagari script (see _get_font_for_text below).
+DEVANAGARI_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+]
 TITLE_FONT_SIZE = 44
 BODY_FONT_SIZE = 32
 
@@ -67,17 +77,75 @@ def _parse_scenes(script_body: str) -> list:
     return scenes[:6]  # cap length so the video doesn't get too long
 
 
-def _get_font(size: int):
+def _contains_devanagari(text: str) -> bool:
+    """Devanagari Unicode block is U+0900-U+097F (covers Hindi, Marathi,
+    Sanskrit, etc)."""
+    return any("\u0900" <= ch <= "\u097F" for ch in text)
+
+
+def _get_font(size: int, text: str = ""):
     from PIL import ImageFont
-    for path in FONT_PATH_CANDIDATES:
+
+    candidates = DEVANAGARI_FONT_CANDIDATES if _contains_devanagari(text) else FONT_PATH_CANDIDATES
+    for path in candidates:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    # Fall back to the other script's font rather than PIL's tiny bitmap
+    # default - better to show a mismatched-but-legible font than nothing.
+    for path in FONT_PATH_CANDIDATES + DEVANAGARI_FONT_CANDIDATES:
         if Path(path).exists():
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
 
-def _wrap_text(text: str, font, max_width: int) -> list:
-    from PIL import ImageDraw
-    dummy_img = __import__("PIL.Image", fromlist=["Image"]).new("RGB", (10, 10))
+def _split_script_runs(text: str) -> list:
+    """Splits text into consecutive runs of the same script (Devanagari
+    vs everything else), since no single installed font covers both -
+    PIL has no automatic font-fallback the way a browser does, so mixed
+    text needs to be drawn run-by-run with the right font each time."""
+    runs = []
+    current_is_dev = None
+    current = ""
+    for ch in text:
+        is_dev = "\u0900" <= ch <= "\u097F"
+        if current_is_dev is None:
+            current_is_dev = is_dev
+            current = ch
+        elif is_dev == current_is_dev:
+            current += ch
+        else:
+            runs.append((current, current_is_dev))
+            current = ch
+            current_is_dev = is_dev
+    if current:
+        runs.append((current, current_is_dev))
+    return runs
+
+
+def _text_width_mixed(draw, text: str, size: int) -> int:
+    width = 0
+    for run_text, is_dev in _split_script_runs(text):
+        font = _get_font(size, text=run_text if is_dev else "")
+        bbox = draw.textbbox((0, 0), run_text, font=font)
+        width += bbox[2] - bbox[0]
+    return width
+
+
+def _draw_mixed_script_text(draw, xy, text: str, fill, size: int) -> None:
+    x, y = xy
+    for run_text, is_dev in _split_script_runs(text):
+        font = _get_font(size, text=run_text if is_dev else "")
+        draw.text((x, y), run_text, fill=fill, font=font)
+        bbox = draw.textbbox((0, 0), run_text, font=font)
+        x += bbox[2] - bbox[0]
+
+
+def _wrap_text(text: str, size: int, max_width: int) -> list:
+    """Word-wraps text to fit max_width, measuring each candidate line's
+    width with the correct per-script font (see _text_width_mixed) so
+    wrapping stays accurate even for mixed Hindi/English sentences."""
+    from PIL import Image, ImageDraw
+    dummy_img = Image.new("RGB", (10, 10))
     draw = ImageDraw.Draw(dummy_img)
 
     words = text.split()
@@ -85,7 +153,7 @@ def _wrap_text(text: str, font, max_width: int) -> list:
     current = ""
     for word in words:
         candidate = f"{current} {word}".strip()
-        width = draw.textbbox((0, 0), candidate, font=font)[2]
+        width = _text_width_mixed(draw, candidate, size)
         if width <= max_width:
             current = candidate
         else:
@@ -103,16 +171,13 @@ def _make_slide_image(scene_number: int, chapter_name: str, scene_text: str, out
     img = Image.new("RGB", SLIDE_SIZE, color=SLIDE_BG_COLOR)
     draw = ImageDraw.Draw(img)
 
-    title_font = _get_font(TITLE_FONT_SIZE)
-    body_font = _get_font(BODY_FONT_SIZE)
-
     title = f"{chapter_name} — Scene {scene_number}"
-    draw.text((60, 50), title, fill=(147, 197, 253), font=title_font)  # light blue heading
+    _draw_mixed_script_text(draw, (60, 50), title, fill=(147, 197, 253), size=TITLE_FONT_SIZE)  # light blue heading
 
-    wrapped = _wrap_text(scene_text, body_font, SLIDE_SIZE[0] - 120)
+    wrapped = _wrap_text(scene_text, BODY_FONT_SIZE, SLIDE_SIZE[0] - 120)
     y = 200
     for line in wrapped[:10]:
-        draw.text((60, y), line, fill=SLIDE_TEXT_COLOR, font=body_font)
+        _draw_mixed_script_text(draw, (60, y), line, fill=SLIDE_TEXT_COLOR, size=BODY_FONT_SIZE)
         y += BODY_FONT_SIZE + 16
 
     img.save(out_path)

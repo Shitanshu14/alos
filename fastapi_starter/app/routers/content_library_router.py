@@ -147,9 +147,16 @@ def _cached_list_content_items(
         if tag:
             q = q.join(models.ContentItem.tags).filter(models.ContentTag.name == tag.strip().lower())
         if search:
-            like = f"%{search}%"
+            # Escape SQL LIKE wildcards (% and _) so a literal percent sign
+            # or underscore in the search box is treated as a literal
+            # character, not a wildcard - without this, searching for "%"
+            # returned nearly the entire library instead of a relevant
+            # (or empty) result set.
+            escaped_search = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped_search}%"
             q = q.filter(
-                (models.ContentItem.title.ilike(like)) | (models.ContentItem.description.ilike(like))
+                (models.ContentItem.title.ilike(like, escape="\\")) |
+                (models.ContentItem.description.ilike(like, escape="\\"))
             )
 
         items = (

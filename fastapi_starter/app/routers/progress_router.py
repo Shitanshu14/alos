@@ -13,6 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from .. import models, schemas
 from ..database import get_db
@@ -114,9 +115,28 @@ def get_or_create_progress(
         )
         if len(dupes) > 1:
             progress = dupes[0]
-            for extra in dupes[1:]:
-                db.delete(extra)
-            db.commit()
+            try:
+                for extra in dupes[1:]:
+                    db.delete(extra)
+                db.commit()
+            except StaleDataError:
+                # Another concurrent request's own dedup pass already
+                # removed the same extra row(s) between our query and our
+                # delete - that's fine, the end state (one row left) is
+                # exactly what we wanted anyway. Roll back this half-done
+                # delete and re-fetch the current, now-consistent state.
+                db.rollback()
+                progress = (
+                    db.query(models.ContentProgress)
+                    .filter(
+                        models.ContentProgress.owner_type == owner_type,
+                        models.ContentProgress.owner_id == owner_id,
+                        models.ContentProgress.content_item_id == content_item.id,
+                        models.ContentProgress.chapter_id == resolved_chapter_id,
+                    )
+                    .order_by(models.ContentProgress.id.asc())
+                    .first()
+                )
             db.refresh(progress)
 
     return progress

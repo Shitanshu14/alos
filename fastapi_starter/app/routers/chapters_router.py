@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import uuid
+import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form, status
@@ -31,7 +32,7 @@ from ..services.content_generation_service import decide_content_types, generate
 from ..services.video_rendering_service import render_video, VideoRenderingError
 from ..services.notification_service import notify
 from ..services.access_control_service import can_access_chapter
-from ..rate_limiter import limiter
+from ..rate_limiter import limiter, user_or_ip_key
 from .auth_router import get_current_user
 
 logger = logging.getLogger("app.chapters")
@@ -256,7 +257,7 @@ def _process_chapter(chapter_id: int) -> None:
     status_code=status.HTTP_201_CREATED,
     summary="Upload a chapter (PDF/DOCX) to start the ALOS pipeline",
 )
-@limiter.limit(settings.CHAPTER_UPLOAD_RATE_LIMIT)
+@limiter.limit(settings.CHAPTER_UPLOAD_RATE_LIMIT, key_func=user_or_ip_key)
 async def upload_chapter(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -293,6 +294,34 @@ async def upload_chapter(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="class_name (max 50), subject (max 100), or chapter_name (max 200) is too long",
+        )
+
+    # Guard against accidental double-submission (e.g. double-clicking
+    # "Upload" on a slow connection, or a retried request) - if this
+    # teacher just uploaded a chapter with the exact same name/subject/
+    # class within the last minute, treat it as a duplicate rather than
+    # silently creating a second, confusing entry (and wasting a second
+    # full background pipeline run, including possible video generation).
+    recent_cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
+    possible_duplicate = (
+        db.query(models.Chapter)
+        .filter(
+            models.Chapter.uploaded_by == current_user.id,
+            models.Chapter.chapter_name == chapter_name,
+            models.Chapter.subject == subject,
+            models.Chapter.class_name == class_name,
+            models.Chapter.created_at >= recent_cutoff,
+        )
+        .first()
+    )
+    if possible_duplicate:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"You just uploaded a chapter named '{chapter_name}' for {subject} {class_name} "
+                f"less than a minute ago (chapter id {possible_duplicate.id}) - if this wasn't "
+                "an accidental double-submission, wait a minute and try again."
+            ),
         )
 
     # --- Validate file type ---
@@ -551,7 +580,9 @@ def list_my_chapters(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(models.Chapter)
+    q = db.query(models.Chapter)
     if current_user.role != "admin":
-        query = query.filter(models.Chapter.uploaded_by == current_user.id)
-    return query.order_by(models.Chapter.created_at.desc()).all()
+        # Admins get platform-wide oversight (every chapter); everyone
+        # else only sees what they personally uploaded.
+        q = q.filter(models.Chapter.uploaded_by == current_user.id)
+    return q.order_by(models.Chapter.created_at.desc()).all()

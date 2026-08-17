@@ -8,11 +8,14 @@
 FROM python:3.12-slim
 
 # System dependencies: ffmpeg + espeak-ng for local, free video rendering;
-# fonts-dejavu-core for the video's text slides.
+# fonts-dejavu-core for English text slides; fonts-noto for Hindi/Devanagari
+# text slides (without this, Hindi chapter names/content render as empty
+# "tofu" boxes instead of actual text - found via QA testing).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     espeak-ng \
     fonts-dejavu-core \
+    fonts-noto \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

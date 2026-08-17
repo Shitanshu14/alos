@@ -514,6 +514,19 @@ class HomeworkCreate(BaseModel):
     chapter_id: Optional[int] = None
     content_item_id: Optional[int] = None
 
+    @field_validator("due_date")
+    @classmethod
+    def check_due_date_not_in_past(cls, v: Optional[datetime.datetime]) -> Optional[datetime.datetime]:
+        if v is not None:
+            # Compare using naive UTC "now" since v may or may not carry
+            # timezone info depending on what the client sent - strip tz
+            # from both sides for a simple, consistent comparison.
+            now = datetime.datetime.utcnow()
+            compare_v = v.replace(tzinfo=None) if v.tzinfo else v
+            if compare_v < now:
+                raise ValueError("due_date cannot be in the past - homework would be overdue the moment it's assigned")
+        return v
+
 
 class HomeworkOut(BaseModel):
     id: int

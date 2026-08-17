@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..services.access_control_service import is_admin
 from .auth_router import get_current_user
 
 router = APIRouter(prefix="/items", tags=["Items"])
@@ -41,15 +40,13 @@ def list_items(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    # Admins can see every item (optionally scoped with ?owner_id=...);
-    # everyone else is always restricted to their own items regardless
-    # of what owner_id is passed.
-    if is_admin(current_user):
-        query = db.query(models.Item)
-        if owner_id is not None:
-            query = query.filter(models.Item.owner_id == owner_id)
-    else:
-        query = db.query(models.Item).filter(models.Item.owner_id == current_user.id)
+    query = db.query(models.Item).filter(models.Item.owner_id == current_user.id)
+
+    # NOTE: this owner_id filter is restricted to only the current user's items
+    # (each user can only see their own data) - if owner_id is provided, it
+    # must match the current user's own id, otherwise the result is empty.
+    if owner_id is not None:
+        query = query.filter(models.Item.owner_id == owner_id)
 
     if search:
         like_pattern = f"%{search}%"
@@ -78,26 +75,21 @@ def list_items(
     return query.offset(skip).limit(limit).all()
 
 
-def _get_item_for_user(item_id: int, current_user: models.User, db: Session) -> models.Item:
-    query = db.query(models.Item).filter(models.Item.id == item_id)
-    if not is_admin(current_user):
-        query = query.filter(models.Item.owner_id == current_user.id)
-    item = query.first()
+# READ ONE
+@router.get("/{item_id}", response_model=schemas.ItemOut)
+def get_item(item_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    item = db.query(models.Item).filter(models.Item.id == item_id, models.Item.owner_id == current_user.id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return item
 
 
-# READ ONE
-@router.get("/{item_id}", response_model=schemas.ItemOut)
-def get_item(item_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return _get_item_for_user(item_id, current_user, db)
-
-
 # UPDATE
 @router.put("/{item_id}", response_model=schemas.ItemOut)
 def update_item(item_id: int, updated: schemas.ItemCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    item = _get_item_for_user(item_id, current_user, db)
+    item = db.query(models.Item).filter(models.Item.id == item_id, models.Item.owner_id == current_user.id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
     item.title = updated.title
     item.description = updated.description
     db.commit()
@@ -108,7 +100,9 @@ def update_item(item_id: int, updated: schemas.ItemCreate, db: Session = Depends
 # DELETE
 @router.delete("/{item_id}")
 def delete_item(item_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    item = _get_item_for_user(item_id, current_user, db)
+    item = db.query(models.Item).filter(models.Item.id == item_id, models.Item.owner_id == current_user.id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
     db.delete(item)
     db.commit()
     return {"message": "Item deleted successfully"}

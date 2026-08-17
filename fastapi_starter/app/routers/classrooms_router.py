@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..services.access_control_service import is_admin
 from ..services.notification_service import notify
 from .auth_router import get_current_user
 
@@ -25,19 +24,20 @@ router = APIRouter(prefix="/classrooms", tags=["Classrooms"])
 
 
 def _require_teacher(user: models.User) -> None:
-    if is_admin(user):
-        return
-    if user.role not in ("teacher", "school"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only teacher/school accounts can manage classrooms")
+    """Admins are included here too - they need to be able to manage/
+    support any classroom for platform oversight (found missing via
+    testing: admin got a flat 403 on every classroom endpoint)."""
+    if user.role not in ("teacher", "school", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only teacher/school (or admin) accounts can manage classrooms")
 
 
 def _get_owned_classroom(classroom_id: int, user: models.User, db: Session) -> models.Classroom:
     classroom = db.query(models.Classroom).filter(models.Classroom.id == classroom_id).first()
     if not classroom:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Classroom not found")
-    if is_admin(user):
-        return classroom
-    if classroom.teacher_id != user.id:
+    # Admins can manage any classroom (platform oversight); everyone else
+    # only their own.
+    if user.role != "admin" and classroom.teacher_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This classroom doesn't belong to your account")
     return classroom
 
@@ -52,6 +52,23 @@ def _is_enrolled(classroom_id: int, student_id: int, db: Session) -> bool:
         .first()
         is not None
     )
+
+
+def _can_view_classroom(classroom_id: int, user: models.User, db: Session) -> bool:
+    """Admins can view any classroom (platform oversight); a teacher/
+    school can view classrooms they created; a student can view
+    classrooms they're enrolled in."""
+    if user.role == "admin":
+        return True
+    is_owner = (
+        db.query(models.Classroom)
+        .filter(models.Classroom.id == classroom_id, models.Classroom.teacher_id == user.id)
+        .first()
+        is not None
+    )
+    if is_owner:
+        return True
+    return user.role == "student" and _is_enrolled(classroom_id, user.id, db)
 
 
 # =========================================================
@@ -85,10 +102,12 @@ def list_my_classrooms(
     db: Session = Depends(get_db),
 ):
     _require_teacher(current_user)
-    query = db.query(models.Classroom)
-    if not is_admin(current_user):
-        query = query.filter(models.Classroom.teacher_id == current_user.id)
-    classrooms = query.all()
+    q = db.query(models.Classroom)
+    if current_user.role != "admin":
+        # Admins get platform-wide oversight (every classroom); everyone
+        # else only sees classrooms they personally created.
+        q = q.filter(models.Classroom.teacher_id == current_user.id)
+    classrooms = q.all()
     results = []
     for c in classrooms:
         count = db.query(models.ClassroomEnrollment).filter(models.ClassroomEnrollment.classroom_id == c.id).count()
@@ -220,15 +239,77 @@ def list_homework(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    is_owner = db.query(models.Classroom).filter(
-        models.Classroom.id == classroom_id, models.Classroom.teacher_id == current_user.id
-    ).first() is not None
-    is_student_member = current_user.role == "student" and _is_enrolled(classroom_id, current_user.id, db)
-
-    if not (is_admin(current_user) or is_owner or is_student_member):
+    if not _can_view_classroom(classroom_id, current_user, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this classroom")
 
     return db.query(models.Homework).filter(models.Homework.classroom_id == classroom_id).order_by(models.Homework.created_at.desc()).all()
+
+
+# =========================================================
+# Unenroll a student (correct an enrollment mistake, or handle a
+# student leaving the class) - found missing via QA testing: there was
+# previously no way to undo an enrollment at all.
+# =========================================================
+@router.delete(
+    "/{classroom_id}/students/{student_id}",
+    response_model=schemas.MessageResponse,
+    summary="Remove a student from a classroom",
+)
+def unenroll_student(
+    classroom_id: int,
+    student_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_teacher(current_user)
+    classroom = _get_owned_classroom(classroom_id, current_user, db)
+
+    enrollment = (
+        db.query(models.ClassroomEnrollment)
+        .filter(
+            models.ClassroomEnrollment.classroom_id == classroom_id,
+            models.ClassroomEnrollment.student_id == student_id,
+        )
+        .first()
+    )
+    if not enrollment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That student isn't enrolled in this classroom")
+
+    db.delete(enrollment)
+    db.commit()
+    return {"message": "Student removed from classroom"}
+
+
+# =========================================================
+# Cancel/delete a homework assignment (correct a mistake) - found
+# missing via QA testing: there was previously no way to undo a
+# homework assignment once created, even seconds after a mistaken click.
+# =========================================================
+@router.delete(
+    "/{classroom_id}/homework/{homework_id}",
+    response_model=schemas.MessageResponse,
+    summary="Cancel/delete a homework assignment",
+)
+def delete_homework(
+    classroom_id: int,
+    homework_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_teacher(current_user)
+    _get_owned_classroom(classroom_id, current_user, db)
+
+    homework = (
+        db.query(models.Homework)
+        .filter(models.Homework.id == homework_id, models.Homework.classroom_id == classroom_id)
+        .first()
+    )
+    if not homework:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Homework not found in this classroom")
+
+    db.delete(homework)
+    db.commit()
+    return {"message": "Homework assignment cancelled"}
 
 
 # =========================================================
@@ -244,12 +325,7 @@ def get_classroom_content(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    is_owner = db.query(models.Classroom).filter(
-        models.Classroom.id == classroom_id, models.Classroom.teacher_id == current_user.id
-    ).first() is not None
-    is_student_member = current_user.role == "student" and _is_enrolled(classroom_id, current_user.id, db)
-
-    if not (is_admin(current_user) or is_owner or is_student_member):
+    if not _can_view_classroom(classroom_id, current_user, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this classroom")
 
     homework_rows = db.query(models.Homework).filter(models.Homework.classroom_id == classroom_id).all()

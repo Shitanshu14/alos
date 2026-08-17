@@ -13,10 +13,10 @@ moment it starts existing.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+import datetime
 
 from .. import models, schemas
 from ..database import get_db
-from ..services.access_control_service import is_admin
 from ..services.notification_service import notify
 from .auth_router import get_current_user
 
@@ -24,8 +24,6 @@ router = APIRouter(prefix="/children", tags=["Children"])
 
 
 def _require_parent(current_user: models.User) -> None:
-    if is_admin(current_user):
-        return
     if current_user.role != "parent":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only parent accounts can manage children")
 
@@ -34,8 +32,6 @@ def _get_owned_child(child_id: int, current_user: models.User, db: Session) -> m
     child = db.query(models.Child).filter(models.Child.id == child_id).first()
     if not child:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Child not found")
-    if is_admin(current_user):
-        return child
     if child.parent_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This child doesn't belong to your account")
     return child
@@ -67,10 +63,12 @@ def list_children(
     db: Session = Depends(get_db),
 ):
     _require_parent(current_user)
-    query = db.query(models.Child)
-    if not is_admin(current_user):
-        query = query.filter(models.Child.parent_id == current_user.id)
-    return query.order_by(models.Child.created_at.asc()).all()
+    return (
+        db.query(models.Child)
+        .filter(models.Child.parent_id == current_user.id)
+        .order_by(models.Child.created_at.asc())
+        .all()
+    )
 
 
 # =========================================================
@@ -202,6 +200,30 @@ def send_to_child(
     item = db.query(models.ContentItem).filter(models.ContentItem.id == payload.content_item_id).first()
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Content item not found")
+
+    # Guard against accidental double/triple-clicking "send" - if this
+    # exact item was already sent to this child in the last minute,
+    # don't clutter their "sent to you" list with duplicate entries.
+    recent_cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
+    recent_duplicate = (
+        db.query(models.SharedContent)
+        .filter(
+            models.SharedContent.target_type == "child",
+            models.SharedContent.target_id == child.id,
+            models.SharedContent.content_item_id == item.id,
+            models.SharedContent.shared_by == current_user.id,
+            models.SharedContent.created_at >= recent_cutoff,
+        )
+        .first()
+    )
+    if recent_duplicate:
+        return schemas.SharedContentOut(
+            id=recent_duplicate.id,
+            content_item_id=recent_duplicate.content_item_id,
+            content=_content_item_out(item),
+            message=recent_duplicate.message,
+            created_at=recent_duplicate.created_at,
+        )
 
     shared = models.SharedContent(
         content_item_id=item.id,

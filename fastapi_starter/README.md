@@ -68,7 +68,48 @@ bugs across two rounds (see the tracker's "Testing 2.0 - Deep Bugs" sheet):
   test, then fixed by rejecting overlong passwords instead of silently
   weakening them.
 
+**QA Round 3** dug into product-context-specific bugs (ALOS's real users
+are schools) and found 2 more:
+- Rate limiting was purely IP-based. Since many teachers/students at one
+  school share a single IP behind their network's NAT, one teacher's
+  normal usage could lock out every other teacher at that school -
+  confirmed directly, then fixed by rate-limiting authenticated endpoints
+  per-user instead.
+- **Hindi/Devanagari text rendered as empty boxes** in generated videos -
+  confirmed with pixel-level image analysis, not just a visual glance.
+  Hindi is one of ALOS's core subjects, so this affected every Hindi
+  chapter's video content. Fixed by installing Noto Sans Devanagari and
+  adding script-aware, per-run font selection (since no single font covers
+  both Hindi and English glyphs).
+
+**QA Round 3** shifted focus to bugs a real teacher/parent/student would
+actually run into during normal use, written as proper QA test cases
+(not just technical edge cases). Found and fixed 5 more:
+- Homework could be assigned with a due date in the past (already
+  "overdue" the moment students see it).
+- Accidentally double-clicking "Upload" on a slow connection created two
+  identical, confusing chapters, each running its own full pipeline.
+- No way for a teacher to undo a wrong student enrollment or cancel a
+  mistaken homework assignment - added the missing endpoints.
+- Searching the content library for a literal `%` or `_` flooded results
+  with almost the entire library, since these are unescaped SQL wildcards.
+- A parent double/triple-clicking "send to child" cluttered the child's
+  shared-content list with duplicate entries for the same item.
+
 ---
+
+## Admin access
+
+Admin accounts have platform-wide oversight: they can view/manage any
+chapter, classroom, game, or quiz - not just ones they personally
+created. This was a real bug reported directly by someone testing the
+API as an admin: every chapter/classroom endpoint returned 403 unless
+the admin happened to have created that exact resource themselves, and
+the admin's own chapter/classroom lists silently showed 0 results
+instead of everything on the platform. Fixed across
+`access_control_service.py` (used by chapters/games/quizzes) and
+`classrooms_router.py`. Regular (non-admin) accounts are unaffected -
+still correctly isolated from each other's data.
 
 ## Security
 

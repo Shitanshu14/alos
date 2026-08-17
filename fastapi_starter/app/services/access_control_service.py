@@ -8,21 +8,17 @@ this chapter's stuff" is defined in exactly one place.
 from .. import models
 
 
-def is_admin(user: models.User) -> bool:
-    """Single source of truth for "is this an admin account" - admins
-    bypass every ownership/role check in the app (chapters, classrooms,
-    children, items, ...)."""
-    return user.role == "admin"
-
-
 def can_access_chapter(db, chapter: models.Chapter, user: models.User) -> bool:
-    """A user can access a chapter if either:
-    - they're an admin (admins can see every chapter), or
+    """A user can access a chapter if any of:
+    - they're an admin (platform-wide oversight - admins need to be able
+      to see/support/moderate any chapter, not just ones they personally
+      uploaded; found missing via testing - admin was getting 403s on
+      every chapter it didn't create itself),
     - they uploaded it (the original owner-only rule from Week 3), or
     - they're a student enrolled in a classroom that has homework
       pointing at this chapter (Week 12's "auto student access").
     """
-    if is_admin(user):
+    if user.role == "admin":
         return True
 
     if chapter.uploaded_by == user.id:

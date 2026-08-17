@@ -97,6 +97,27 @@ class TestParentChild:
         r = client.patch(f"/children/{child['id']}/class", headers=headers, json={"class_name": "Class 5"})
         assert r.json()["class_name"] == "Class 5"
 
+    def test_repeated_send_to_child_no_duplicate_clutter(self, client, make_user):
+        """Regression test (QA Round 3): a parent double/triple-clicking
+        'send' cluttered the child's shared-content list with duplicate
+        entries for the exact same item."""
+        admin, admin_h = make_user("admin")
+        parent, parent_h = make_user("parent")
+        client.post("/content-library/seed", headers=admin_h)
+        items = client.get("/content-library/", headers=parent_h, params={"limit": 2}).json()
+        item_id, item_id2 = items[0]["id"], items[1]["id"]
+        child = client.post("/children/", headers=parent_h, json={"name": "Kid"}).json()
+
+        for _ in range(3):
+            client.post(f"/children/{child['id']}/send", headers=parent_h, json={"content_item_id": item_id})
+        shared = client.get(f"/children/{child['id']}/shared-content", headers=parent_h).json()
+        assert len(shared) == 1
+
+        # A genuinely different item must still go through
+        client.post(f"/children/{child['id']}/send", headers=parent_h, json={"content_item_id": item_id2})
+        shared2 = client.get(f"/children/{child['id']}/shared-content", headers=parent_h).json()
+        assert len(shared2) == 2
+
     def test_non_parent_cannot_add_child(self, client, make_user):
         teacher, headers = make_user("teacher")
         r = client.post("/children/", headers=headers, json={"name": "X"})

@@ -15,6 +15,22 @@ class TestContentLibrary:
         r2 = client.post("/content-library/seed", headers=headers)
         assert "already has" in r2.json()["message"]
 
+    def test_search_wildcards_treated_literally(self, client, make_user):
+        """Regression test (QA Round 3): searching for a literal '%' or
+        '_' flooded results with nearly the whole library, because these
+        are SQL LIKE wildcards and weren't being escaped."""
+        admin, headers = make_user("admin")
+        client.post("/content-library/seed", headers=headers)
+
+        r_percent = client.get("/content-library/", headers=headers, params={"search": "%"})
+        r_underscore = client.get("/content-library/", headers=headers, params={"search": "_"})
+        assert len(r_percent.json()) == 0
+        assert len(r_underscore.json()) == 0
+
+        # Normal search must still work
+        r_normal = client.get("/content-library/", headers=headers, params={"search": "Photosynthesis"})
+        assert len(r_normal.json()) > 0
+
     def test_only_admin_can_create(self, client, make_user):
         admin, admin_h = make_user("admin")
         teacher, teacher_h = make_user("teacher")

@@ -37,6 +37,67 @@ class TestClassrooms:
         r = client.post("/classrooms/", headers=headers, json={"name": "X", "subject": "Y", "class_name": "Z"})
         assert r.status_code == 403
 
+    def test_admin_has_oversight_access_to_any_classroom(self, client, make_user, sample_docx):
+        """Regression test: admin was getting 403 on GET /classrooms/ and
+        every classroom sub-resource unless they personally created the
+        classroom - reported directly by a user testing as an admin."""
+        teacher, teacher_h = make_user("teacher")
+        admin, admin_h = make_user("admin")
+
+        classroom = client.post("/classrooms/", headers=teacher_h, json={
+            "name": "Section A", "subject": "Science", "class_name": "Class 6",
+        }).json()
+
+        assert client.get(f"/classrooms/{classroom['id']}/students", headers=admin_h).status_code == 200
+        assert client.get(f"/classrooms/{classroom['id']}/homework", headers=admin_h).status_code == 200
+
+        all_classrooms = client.get("/classrooms/", headers=admin_h).json()
+        assert any(c["id"] == classroom["id"] for c in all_classrooms)
+
+        # A different regular teacher must still be blocked - this fix
+        # must not weaken normal cross-teacher isolation.
+        other_teacher, other_h = make_user("teacher")
+        assert client.get(f"/classrooms/{classroom['id']}/students", headers=other_h).status_code == 403
+
+    def test_unenroll_student_and_delete_homework(self, client, make_user, sample_docx):
+        """Regression test (QA Round 3): there was previously no way for
+        a teacher to undo an enrollment mistake or cancel a wrong
+        homework assignment - a real gap a teacher would hit constantly
+        (wrong student enrolled, student transfers out, wrong chapter
+        assigned by mistake)."""
+        teacher, teacher_h = make_user("teacher")
+        student, student_h = make_user("student")
+        student_id = client.get("/auth/me", headers=student_h).json()["id"]
+
+        classroom = client.post("/classrooms/", headers=teacher_h, json={
+            "name": "A", "subject": "Science", "class_name": "Class 6",
+        }).json()
+        client.post(f"/classrooms/{classroom['id']}/enroll", headers=teacher_h, json={"student_user_id": student_id})
+        assert len(client.get(f"/classrooms/{classroom['id']}/students", headers=teacher_h).json()) == 1
+
+        r = client.delete(f"/classrooms/{classroom['id']}/students/{student_id}", headers=teacher_h)
+        assert r.status_code == 200
+        assert len(client.get(f"/classrooms/{classroom['id']}/students", headers=teacher_h).json()) == 0
+
+        with open(sample_docx, "rb") as f:
+            up = client.post(
+                "/chapters/upload", headers=teacher_h,
+                data={"class_name": "Class 6", "subject": "Science", "chapter_name": "UnenrollTest"},
+                files={"file": ("c.docx", f, "application/octet-stream")},
+            )
+        cid = up.json()["id"]
+        wait_for_chapter_ready(client, teacher_h, cid)
+
+        hw = client.post(f"/classrooms/{classroom['id']}/homework", headers=teacher_h, json={
+            "title": "Mistake", "chapter_id": cid,
+        }).json()
+        r = client.delete(f"/classrooms/{classroom['id']}/homework/{hw['id']}", headers=teacher_h)
+        assert r.status_code == 200
+        assert len(client.get(f"/classrooms/{classroom['id']}/homework", headers=teacher_h).json()) == 0
+
+        r_404 = client.delete(f"/classrooms/{classroom['id']}/homework/999999", headers=teacher_h)
+        assert r_404.status_code == 404
+
 
 class TestGames:
     def test_concept_match_and_memory(self, client, make_user, sample_docx):
