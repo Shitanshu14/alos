@@ -2,7 +2,7 @@
 Week 3 — Chapter Upload.
 Week 4 — Chapter processing (text extraction -> AI understanding -> content brief).
 
-Lets a logged-in teacher/parent upload a school chapter (PDF or DOCX)
+Lets any logged-in user upload a school chapter (PDF or DOCX)
 along with its class and subject. The file is saved to disk and a
 Chapter row is created with status="uploaded". Right after that, a
 background task picks the chapter up and moves it through
@@ -29,7 +29,7 @@ from ..services.ai_service import analyze_chapter_text, AIServiceError
 from ..services.matching_service import find_best_matches, evaluate_matches, get_unmatched_content_types, CONTENT_TYPES
 from ..services.customization_service import customize_for_chapter
 from ..services.content_generation_service import decide_content_types, generate_content, validate_generated_content
-from ..services.video_rendering_service import render_video, VideoRenderingError
+from ..services.video_rendering_service import render_video, narration_available, VideoRenderingError
 from ..services.notification_service import notify
 from ..services.access_control_service import can_access_chapter
 from ..rate_limiter import limiter, user_or_ip_key
@@ -110,14 +110,18 @@ def _run_matching(db: Session, chapter: models.Chapter, key_concepts: list) -> N
                 relative_path = render_video(chapter.chapter_name, generated["body"], settings.GENERATED_MEDIA_DIR)
                 generated["media_url"] = f"/media/{relative_path}"
                 generated["title"] = generated["title"].replace(" (Script)", "")
+                narrated = narration_available()
                 generated["description"] = (
-                    f"An auto-generated narrated video covering {chapter.chapter_name}'s key concepts."
+                    f"An auto-generated {'narrated ' if narrated else ''}video covering {chapter.chapter_name}'s key concepts."
                 )
                 generated["body"] = generated["body"].replace(
                     "[Auto-generated script - record/animate an actual video from this before publishing to students.]",
                     "[This script was rendered into the video above (narrated slideshow, auto-generated locally).]",
                 )
-                gen_reason += " | Rendered as a real video (narrated slideshow)."
+                gen_reason += (
+                    " | Rendered as a real video (narrated slideshow)." if narrated
+                    else " | Rendered as a real video, but SILENT - install espeak-ng for narration."
+                )
             except VideoRenderingError as exc:
                 logger.warning("Video rendering failed for chapter %s, falling back to script only: %s", chapter.id, exc)
                 gen_reason += f" | Video rendering unavailable, kept as script only ({exc})."
@@ -268,16 +272,12 @@ async def upload_chapter(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Upload triggers an expensive background pipeline (text extraction,
-    # matching, and possibly real video rendering via ffmpeg/TTS) - only
-    # teacher/school accounts should be able to kick that off, matching
-    # the feature's intended use (this also caps abuse/resource-exhaustion
-    # risk, on top of the rate limit above).
-    if current_user.role not in ("teacher", "school"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teacher/school accounts can upload chapters",
-        )
+    # Any logged-in user (teacher, parent, school, student, user, admin) can
+    # upload - there is deliberately no role check here. Login is still
+    # required (get_current_user above): the upload triggers a heavy
+    # background pipeline (text extraction, matching, video rendering), and
+    # the Chapter row needs an owner. The per-user rate limit on this
+    # endpoint is what caps abuse.
     # --- Validate basic text fields aren't empty/whitespace, and aren't
     # absurdly long (these get embedded into generated video slides,
     # notification text, etc. - an unbounded length is both a minor DoS

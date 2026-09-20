@@ -141,6 +141,12 @@ async def log_requests(request: Request, call_next):
 if "*" in settings.CORS_ORIGINS and settings.ENV == "production":
     logger.warning("CORS_ORIGINS contains '*' in production - please fix this!")
 
+if settings.ALLOW_ADMIN_SIGNUP and settings.ENV == "production":
+    logger.warning(
+        "ALLOW_ADMIN_SIGNUP is on in production - anyone can register as an admin. "
+        "Set ALLOW_ADMIN_SIGNUP=false unless that is really what you want."
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,

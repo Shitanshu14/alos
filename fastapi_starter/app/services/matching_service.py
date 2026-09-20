@@ -88,6 +88,13 @@ def find_best_matches(db, chapter, chapter_concepts: list) -> dict:
     results = {}
     for content_type in CONTENT_TYPES:
         type_candidates = [c for c in candidates if c.content_type == content_type]
+        if content_type == "video":
+            # The seeded library's video items are placeholders: their
+            # media_url points at a fake CDN (cdn.alos.app) and no such file
+            # exists. Matching one made the chapter's "video" a dead link and
+            # skipped rendering entirely. Only real videos - admin-uploaded
+            # or rendered by video_rendering_service - can win a match.
+            type_candidates = [c for c in type_candidates if not c.is_seed_placeholder]
 
         best_item = None
         best_score = 0.0
@@ -117,6 +124,8 @@ def validate_match(item: ContentItem, score: float):
         return False, "Matched text content has no body"
     if item.content_type in ("video", "cartoon") and not (item.media_url and item.media_url.strip()):
         return False, "Matched media content has no media_url"
+    if item.content_type == "video" and item.is_seed_placeholder:
+        return False, "Matched video is a seed placeholder (its media_url is not a real file)"
     if not item.tags:
         return False, "Matched item has no tags - too low-confidence to finalize"
     return True, "Match passed quality checks"

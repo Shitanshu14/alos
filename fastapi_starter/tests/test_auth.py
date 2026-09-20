@@ -4,26 +4,55 @@ import pytest
 
 class TestAuth:
     def test_signup_all_roles(self, client, make_user):
-        for role in ("teacher", "parent", "student", "school"):
+        """Every role can register through public signup - including student,
+        user and admin."""
+        for role in ("teacher", "parent", "student", "school", "user", "admin"):
             user, _ = make_user(role)
             assert user["role"] == role
 
-    def test_admin_role_rejected_at_public_signup(self, client):
-        """Security regression test: admin must NEVER be self-registerable
-        through the public signup endpoint - see app/create_admin.py for
-        the correct (trusted-operator-only) way to create one."""
+    def test_admin_user_student_register_through_the_signup_api(self, client):
+        """make_user creates 'admin' straight in the DB, so this hits the real
+        POST /auth/signup for the roles that used to be rejected."""
+        for i, role in enumerate(("admin", "user", "student")):
+            r = client.post("/auth/signup", json={
+                "full_name": f"Self {role}", "email": f"self_{role}@test.com", "phone": f"954444440{i}",
+                "password": "Pass@123", "role": role,
+            })
+            assert r.status_code == 201, f"{role}: {r.text}"
+            assert r.json()["user"]["role"] == role
+            login = client.post("/auth/login", json={"email": f"self_{role}@test.com", "password": "Pass@123"})
+            assert login.status_code == 200
+
+    def test_admin_and_user_roles_work_after_signup(self, client, make_user):
+        for role in ("admin", "user"):
+            user, headers = make_user(role)
+            assert client.get("/auth/me", headers=headers).json()["role"] == role
+            dash = client.get("/dashboard/", headers=headers)
+            assert dash.status_code == 200
+            assert dash.json()["role"] == role
+
+    def test_unknown_role_rejected(self, client):
+        r = client.post("/auth/signup", json={
+            "full_name": "X", "email": "badrole@test.com", "phone": "9111111111",
+            "password": "Pass@123", "role": "superman",
+        })
+        assert r.status_code == 422
+
+    def test_admin_signup_can_be_switched_off(self, client, monkeypatch):
+        """ALLOW_ADMIN_SIGNUP=false removes 'admin' (and only 'admin') from
+        the public signup list."""
+        from app import schemas
+        monkeypatch.setattr(schemas, "ALLOWED_SIGNUP_ROLES", schemas.ALL_ROLES - {"admin"})
         r = client.post("/auth/signup", json={
             "full_name": "Wannabe Admin", "email": "wannabe_admin@test.com", "phone": "9555555555",
             "password": "Pass@123", "role": "admin",
         })
         assert r.status_code == 422
-
-    def test_invalid_role_rejected(self, client):
         r = client.post("/auth/signup", json={
-            "full_name": "X", "email": "badrole@test.com", "phone": "9111111111",
-            "password": "Pass@123", "role": "user",
+            "full_name": "Still Fine", "email": "still_fine_teacher@test.com", "phone": "9555555556",
+            "password": "Pass@123", "role": "teacher",
         })
-        assert r.status_code == 422
+        assert r.status_code == 201
 
     def test_duplicate_email_rejected(self, client, make_user):
         user, _ = make_user("teacher", email="dup@test.com")

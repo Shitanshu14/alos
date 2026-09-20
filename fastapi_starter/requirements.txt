@@ -21,9 +21,11 @@ python-docx==1.1.2
 
 # --- Video rendering (real .mp4 from the generated script, no paid AI) ---
 # Also needs system packages: ffmpeg + espeak-ng (apt-get install ffmpeg espeak-ng)
-pyttsx3==2.90
+# Narration runs the espeak-ng CLI directly (pyttsx3 was removed - it needs
+# the legacy libespeak.so.1, which the espeak-ng package doesn't provide).
 moviepy==2.1.2
 pillow==10.4.0
 
 # --- Testing (Week 15) ---
 pytest==8.3.3
+httpx==0.27.2  # required by FastAPI's TestClient

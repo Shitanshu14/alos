@@ -64,6 +64,14 @@ class Settings:
     # Frontend URL used in the links of verification/reset emails
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+    # --- Signup ---
+    # true (default): anyone can pick ANY role at signup, admin included.
+    # false: "admin" is removed from the public signup list - create admins
+    # with `python -m app.create_admin` instead. Recommended for production:
+    # an admin can manage the content library, review feedback and see
+    # every user's chapters.
+    ALLOW_ADMIN_SIGNUP: bool = _get_bool("ALLOW_ADMIN_SIGNUP", True)
+
     # --- App ---
     ENV: str = os.getenv("ENV", "development")  # "development" | "production"
 

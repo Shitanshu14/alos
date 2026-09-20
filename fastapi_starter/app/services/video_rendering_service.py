@@ -4,7 +4,7 @@ Week 7 (extended) — Actually render a video file from the script.
 content_generation_service.py writes a scene-by-scene script (text) for
 content_type="video". This module turns that script into a REAL .mp4:
 one slide image per scene (title + narration text) + offline
-text-to-speech narration (espeak-ng via pyttsx3), stitched together with
+text-to-speech narration (the espeak-ng command-line tool), stitched together with
 moviepy/ffmpeg. Still no paid API, no internet call - everything runs
 on this server for free.
 
@@ -16,13 +16,16 @@ wanted later, generate_content()'s output (the script) is exactly the
 brief a human animator or a paid AI video tool would need - swapping
 this module for that later doesn't require changing anything upstream.
 
-Requires system packages not guaranteed on every host: ffmpeg + espeak-ng.
-If either is missing (e.g. a bare-bones free hosting tier), rendering
-fails gracefully and the caller falls back to script-only content
-instead of crashing the whole chapter pipeline.
+Needs only the Python packages for the video itself (moviepy bundles its
+own ffmpeg via imageio-ffmpeg). espeak-ng is needed only for the spoken
+narration: without it the video is still rendered, just silent. If the
+render itself fails, VideoRenderingError is raised and the caller falls
+back to script-only content instead of crashing the whole chapter pipeline.
 """
 import logging
 import re
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -32,8 +35,13 @@ SLIDE_SIZE = (1280, 720)
 SLIDE_BG_COLOR = (30, 41, 59)      # dark slate
 SLIDE_TEXT_COLOR = (255, 255, 255)
 FONT_PATH_CANDIDATES = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # Linux / the Docker image
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",      # macOS
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",                           # Windows
+    "C:/Windows/Fonts/arial.ttf",
 ]
 # DejaVu Sans has no Devanagari glyphs at all - Hindi text rendered as
 # empty "tofu" boxes (confirmed via direct pixel-level testing: a
@@ -44,6 +52,9 @@ FONT_PATH_CANDIDATES = [
 DEVANAGARI_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+    "/System/Library/Fonts/Supplemental/DevanagariMT.ttc",    # macOS
+    "/System/Library/Fonts/Kohinoor.ttc",
+    "C:/Windows/Fonts/Nirmala.ttf",                           # Windows
 ]
 TITLE_FONT_SIZE = 44
 BODY_FONT_SIZE = 32
@@ -95,7 +106,12 @@ def _get_font(size: int, text: str = ""):
     for path in FONT_PATH_CANDIDATES + DEVANAGARI_FONT_CANDIDATES:
         if Path(path).exists():
             return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
+    # Last resort: Pillow's built-in font. Pillow >= 10.1 can scale it to the
+    # requested size; older versions only have the tiny bitmap one.
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def _split_script_runs(text: str) -> list:
@@ -183,13 +199,52 @@ def _make_slide_image(scene_number: int, chapter_name: str, scene_text: str, out
     img.save(out_path)
 
 
+def narration_available() -> bool:
+    """True if a text-to-speech engine (espeak-ng) is installed on this host."""
+    return bool(shutil.which("espeak-ng") or shutil.which("espeak"))
+
+
+def _silent_duration(text: str) -> float:
+    """How long to show a slide when there's no narration: roughly reading
+    speed (~2.5 words/second), never shorter than 3 seconds."""
+    return max(len(text.split()) / 2.5 + 1.0, 3.0)
+
+
 def _narrate(text: str, out_path: str) -> None:
-    import pyttsx3
-    engine = pyttsx3.init()
-    engine.setProperty("rate", 165)
-    engine.save_to_file(text, out_path)
-    engine.runAndWait()
-    engine.stop()
+    """Text-to-speech via the espeak-ng command-line tool -> a .wav file.
+
+    Why the CLI and not pyttsx3: pyttsx3's espeak driver loads the legacy
+    'libespeak.so.1' shared library, which the plain 'espeak-ng' apt package
+    does NOT ship (it only ships 'libespeak-ng.so.1'). On such hosts
+    pyttsx3.init() crashed on every call, so every video silently fell back
+    to script-only. The CLI only needs the 'espeak-ng' binary itself.
+    The text goes in via stdin so odd characters / leading dashes / very
+    long lines can't be misread as command-line options.
+    """
+    binary = shutil.which("espeak-ng") or shutil.which("espeak")
+    if not binary:
+        raise VideoRenderingError(
+            "espeak-ng is not installed (apt-get install espeak-ng) - cannot narrate the video"
+        )
+
+    # Use the Hindi voice for Devanagari text, English otherwise (mirrors the
+    # per-script font handling used for the slides).
+    voice = "hi" if _contains_devanagari(text) else "en"
+    cmd = [binary, "-v", voice, "-s", "165", "--stdin", "-w", out_path]
+    try:
+        subprocess.run(
+            cmd, input=text.encode("utf-8"), check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VideoRenderingError("Text-to-speech timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise VideoRenderingError(f"Text-to-speech failed: {detail or exc}") from exc
+
+    out = Path(out_path)
+    if not out.exists() or out.stat().st_size == 0:
+        raise VideoRenderingError("Text-to-speech produced no audio")
 
 
 def render_video(chapter_name: str, script_body: str, output_dir: str) -> str:
@@ -212,20 +267,30 @@ def render_video(chapter_name: str, script_body: str, output_dir: str) -> str:
     work_dir = videos_dir / f"_tmp_{work_id}"
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # Narration is optional: without espeak-ng (e.g. a Mac/Windows dev machine)
+    # we still render the video - a silent slideshow - instead of giving up and
+    # leaving the chapter with no video at all. If espeak-ng IS installed but
+    # errors, that's a real problem and is raised below.
+    narrate = narration_available()
+    if not narrate:
+        logger.warning("espeak-ng not found - rendering a SILENT video (install espeak-ng for narration)")
+
     clips = []
     final = None
     try:
         for i, scene_text in enumerate(scenes, start=1):
             slide_path = str(work_dir / f"slide_{i}.png")
-            audio_path = str(work_dir / f"narration_{i}.wav")
-
             _make_slide_image(i, chapter_name, scene_text, slide_path)
-            _narrate(scene_text, audio_path)
 
-            audio_clip = AudioFileClip(audio_path)
-            # Small pad so narration doesn't feel cut off
-            duration = max(audio_clip.duration + 0.5, 1.5)
-            image_clip = ImageClip(slide_path).with_duration(duration).with_audio(audio_clip)
+            if narrate:
+                audio_path = str(work_dir / f"narration_{i}.wav")
+                _narrate(scene_text, audio_path)
+                audio_clip = AudioFileClip(audio_path)
+                # Small pad so narration doesn't feel cut off
+                duration = max(audio_clip.duration + 0.5, 1.5)
+                image_clip = ImageClip(slide_path).with_duration(duration).with_audio(audio_clip)
+            else:
+                image_clip = ImageClip(slide_path).with_duration(_silent_duration(scene_text))
             clips.append(image_clip)
 
         if not clips:
@@ -256,5 +321,4 @@ def render_video(chapter_name: str, script_body: str, output_dir: str) -> str:
             except Exception:
                 pass  # best-effort - don't let cleanup itself raise
         # Clean up temp slide/audio files (keep only the final mp4)
-        import shutil
         shutil.rmtree(work_dir, ignore_errors=True)

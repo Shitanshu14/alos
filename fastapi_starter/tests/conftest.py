@@ -144,6 +144,80 @@ def unrelated_docx(tmp_path):
     return str(path)
 
 
+def _make_text_pdf(lines) -> bytes:
+    """Builds a minimal but valid single-page PDF with real, extractable
+    text (no extra PDF-writing library needed just for tests)."""
+    def esc(t):
+        return t.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+    content = "BT /F1 12 Tf 50 750 Td 16 TL\n" + "\n".join(f"({esc(l)}) Tj T*" for l in lines) + "\nET"
+    objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        "/Resources << /Font << /F1 5 0 R >> >> >>",
+        f"<< /Length {len(content)} >>\nstream\n{content}\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = "%PDF-1.4\n"
+    offsets = []
+    for i, o in enumerate(objs, 1):
+        offsets.append(len(out.encode("latin-1")))
+        out += f"{i} 0 obj\n{o}\nendobj\n"
+    xref = len(out.encode("latin-1"))
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n"
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    return out.encode("latin-1")
+
+
+@pytest.fixture
+def unrelated_pdf(tmp_path):
+    """A real PDF (extractable text layer) on a topic absent from the seed
+    library, so every content type gets generated.
+
+    NOTE on isolation: the test DB is shared for the whole session and the
+    pipeline pushes generated content back into the library, tagged with the
+    chapter's key concepts. So every test that needs "no library match" must
+    use its OWN topic - reusing one (e.g. the 'quantum' one in
+    unrelated_docx) makes later tests match the earlier test's generated
+    items instead of generating."""
+    path = tmp_path / "unrelated_chapter.pdf"
+    path.write_bytes(_make_text_pdf([
+        "Zeolite catalysis is central to petrochemical refining and hydrocarbon cracking.",
+        "Zeolite frameworks contain microporous channels that trap reactant molecules.",
+        "Engineers tune zeolite acidity and pore geometry to control hydrocarbon cracking selectivity.",
+        "Industrial reactors regenerate deactivated zeolite catalysts through controlled coke combustion.",
+        "Petrochemical refining depends on zeolite catalysis for gasoline and propylene production.",
+    ]))
+    return str(path)
+
+
+@pytest.fixture
+def video_docx(tmp_path):
+    """Another 'not in the seed library' chapter with its own private topic
+    (see the isolation note on unrelated_pdf) - used by the strict
+    video-rendering test."""
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph(
+        "Byzantine fault tolerance lets distributed consensus protocols survive malicious nodes. "
+        "Byzantine generals must agree on one plan even when some generals send conflicting messages."
+    )
+    doc.add_paragraph(
+        "Consensus protocols such as practical Byzantine fault tolerance use quorum voting rounds "
+        "so that honest replicas reach identical ledger state."
+    )
+    doc.add_paragraph(
+        "Blockchain validators rely on Byzantine fault tolerance and quorum voting to finalize "
+        "ledger blocks without a trusted coordinator."
+    )
+    path = tmp_path / "video_chapter.docx"
+    doc.save(str(path))
+    return str(path)
+
+
 def wait_for_chapter_ready(client, headers, chapter_id, timeout=45):
     """Polls /chapters/{id}/status instead of a fixed sleep - background
     processing time varies (video rendering in particular can take a

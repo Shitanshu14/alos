@@ -98,6 +98,19 @@ actually run into during normal use, written as proper QA test cases
 
 ---
 
+## Roles and signup
+
+Every role can register through `POST /auth/signup`:
+`school`, `teacher`, `parent`, `student`, `user`, `admin`. Anything else gets a 422.
+
+**Admin signup is open on purpose** - anyone can register as an admin, and an
+admin can manage the content library, review feedback and see every user's
+chapters. For a real deployment set `ALLOW_ADMIN_SIGNUP=false` in `.env`: that
+removes only `admin` from the public list (create admins with
+`python -m app.create_admin` instead). The app logs a warning at startup if
+`ENV=production` and admin signup is still on. The list itself lives in
+`ALLOWED_SIGNUP_ROLES` in `app/schemas.py`.
+
 ## Admin access
 
 Admin accounts have platform-wide oversight: they can view/manage any
@@ -116,10 +129,11 @@ still correctly isolated from each other's data.
 A focused security review found and fixed the following (all covered by
 regression tests in `tests/`):
 
-- **Fixed (critical):** the signup endpoint originally allowed `role: "admin"`
+- **Was fixed, now optional:** the signup endpoint originally allowed `role: "admin"`
   - anyone could self-register as an admin and get full content-library +
-  feedback access. Admin is no longer a valid signup role; create one via
-  `python -m app.create_admin` instead (trusted operator, direct DB access only).
+  feedback access. That was later re-opened **on request**: admin is a valid
+  signup role again, controlled by `ALLOW_ADMIN_SIGNUP` (see "Roles and
+  signup" above) - switch it off in production.
 - **Fixed:** the app would silently run in production with the default
   placeholder `SECRET_KEY` if `.env` wasn't configured, letting anyone forge
   valid login tokens. It now refuses to start in production with a missing/weak
@@ -128,9 +142,12 @@ regression tests in `tests/`):
   chapter-upload (which triggers expensive background processing, including
   video rendering) were wide open to abuse. All four now have rate limits
   (see `.env.example` for the settings).
-- **Fixed:** chapter upload had no role check - any logged-in account
-  (including students) could trigger the processing pipeline. Restricted to
-  teacher/school accounts.
+- **Design decision:** chapter upload is open to **any logged-in account**
+  (teacher, parent, school, student, user, admin) - there is no role check.
+  It still requires login (the chapter needs an owner) and is rate-limited
+  per user (`CHAPTER_UPLOAD_RATE_LIMIT`), which is what caps abuse of the
+  expensive processing/video pipeline. (It was briefly restricted to
+  teacher/school; that restriction was removed on purpose.)
 - **Fixed:** request bodies had no length limits on free-text fields (name,
   messages, chapter titles, etc.) - a minor DoS/storage-bloat vector, and
   unnecessary stored-XSS blast radius if the frontend ever renders this text
@@ -259,7 +276,7 @@ DEPLOYMENT.md                     - Week 16: full deployment + monitoring + load
 ## Data model
 
 ```
-User              - login account (teacher/parent/student/school/admin)
+User              - login account (school/parent/teacher/student/user/admin)
 Item              - generic example table from the original starter kit
 
 Chapter           - one uploaded chapter (class, subject, name, file, status)
@@ -292,9 +309,21 @@ install these system packages too:
 ```
 apt-get install -y ffmpeg espeak-ng
 ```
-If these aren't available (e.g. some bare-bones hosting tiers), the pipeline
-still works — it just falls back to a script-only video item instead of
-crashing.
+Narration calls the `espeak-ng` command-line tool directly (no `pyttsx3`, no
+`libespeak.so.1` needed). Devanagari text is spoken with espeak-ng's Hindi
+voice and drawn with Noto Sans Devanagari (`fonts-noto`).
+
+`espeak-ng` is only needed for the *voice*. Without it (e.g. a Mac -
+`brew install espeak-ng` - or a bare hosting tier) the video is still
+rendered, just as a **silent** slideshow, and the match's `quality_notes` say
+so. moviepy bundles its own ffmpeg, so nothing else is needed. The pipeline
+only falls back to a script-only item if the render itself fails.
+
+**Seeded videos are placeholders:** the 108 seed items have fake
+`cdn.alos.app` video URLs. They are never used as a video match - a chapter's
+video is always a real file: a real video from the library (admin-uploaded, or
+rendered for an earlier chapter with the same concepts), otherwise a newly
+rendered one. (Seed *cartoons* are still placeholders with fake image links.)
 
 ## Step 2: Create a virtual environment (recommended)
 ```

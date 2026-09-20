@@ -4,29 +4,29 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, field_validator, Field
 
+from .config import settings
+
 
 PASSWORD_REGEX_UPPER = re.compile(r"[A-Z]")
 PASSWORD_REGEX_LOWER = re.compile(r"[a-z]")
 PASSWORD_REGEX_DIGIT = re.compile(r"\d")
 PASSWORD_REGEX_SPECIAL = re.compile(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]")
 
-# Only these roles are allowed at registration time (security: this whitelist
-# prevents anyone from registering themselves as "admin").
-# ALOS-specific roles - each gets a different dashboard view (see dashboard_router.py):
-#   teacher - uploads chapters, sees processing status
-#   parent  - will see their children's learning progress (Week 10)
-#   student - will see assigned content + progress (Week 8-9)
-#   school  - institution-level account, same view as teacher for now
-#
-# "admin" is DELIBERATELY EXCLUDED from this set. Admin accounts have
-# access to content library management, feedback review, and other
-# sensitive operations - they must never be self-registerable through
-# the public signup endpoint. Create admin accounts directly in the
-# database (or a one-off trusted script), not through the API.
-ALLOWED_SIGNUP_ROLES = {"teacher", "parent", "student", "school"}
-# Includes "admin" - used for validating a role value read back OUT of the
-# system (e.g. an existing user's role), never for validating signup input.
-ALL_ROLES = ALLOWED_SIGNUP_ROLES | {"admin"}
+# Roles that exist in the system:
+#   school  - institution-level account (same dashboard view as teacher for now)
+#   teacher - uploads chapters, runs classrooms, sees processing status
+#   parent  - sees their children's learning progress
+#   student - enrolled in classrooms, sees assigned content + progress
+#   user    - general-purpose account (no role-specific dashboard yet)
+#   admin   - platform-wide oversight (content library, feedback, any chapter)
+ALL_ROLES = {"school", "parent", "teacher", "student", "user", "admin"}
+
+# Roles that can be picked at public signup (POST /auth/signup): every role.
+# Anyone can therefore register as an admin - that is intentional (see
+# ALLOW_ADMIN_SIGNUP in config.py / .env.example). Set ALLOW_ADMIN_SIGNUP=false
+# to take "admin" off the public signup list (then create admins with
+# `python -m app.create_admin`).
+ALLOWED_SIGNUP_ROLES = ALL_ROLES if settings.ALLOW_ADMIN_SIGNUP else ALL_ROLES - {"admin"}
 
 
 def validate_password_strength(password: str) -> str:
@@ -68,7 +68,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     phone: str = Field(..., min_length=5, max_length=20)
     password: str = Field(..., max_length=128)  # min length enforced by check_password below
-    role: str  # required - must be one of ALLOWED_SIGNUP_ROLES (admin is NOT self-registerable)
+    role: str  # required - must be one of ALLOWED_SIGNUP_ROLES (see the role list above)
 
     @field_validator("full_name")
     @classmethod
