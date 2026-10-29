@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta
 
-from jose import jwt
+import jwt  # PyJWT (python-jose is unmaintained and has an unfixed JWT CVE)
 from passlib.context import CryptContext
 
 from .config import settings
@@ -27,7 +27,12 @@ def create_access_token(data: dict) -> str:
 
 
 def decode_access_token(token: str) -> dict:
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    # `algorithms` is pinned (never taken from the token header) and exp/sub are
+    # REQUIRED, so a token without an expiry is rejected instead of living forever.
+    return jwt.decode(
+        token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM],
+        options={"require": ["exp", "sub"]},
+    )
 
 
 # ---------- Refresh tokens ----------

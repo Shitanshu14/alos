@@ -25,16 +25,34 @@ services:
           property: connectionString
       - key: FRONTEND_URL
         value: https://your-frontend-domain.example.com
+      # CORS_ORIGINS was missing: it defaults to localhost, so a deployed frontend
+      # would be blocked by the browser. FRONTEND_URL does NOT feed CORS. Set the
+      # real frontend origin(s), comma separated.
+      - key: CORS_ORIGINS
+        value: https://your-frontend-domain.example.com
+      # Admin accounts are created with `python -m app.create_admin`, not public
+      # signup. (Also the default when ENV=production; explicit here on purpose.)
+      - key: ALLOW_ADMIN_SIGNUP
+        value: "false"
+      # Only one video render at a time on a small instance (CPU/RAM heavy).
+      - key: MAX_CONCURRENT_RENDERS
+        value: "1"
       - key: LOGIN_RATE_LIMIT
         value: 5/minute
       # SMTP_* - fill these in via the Render dashboard (not committed here)
       # so real verification/reset/notification emails send instead of
       # just being logged. Leave unset for dev-mode logging behavior.
     healthCheckPath: /health
-    disk:
-      name: alos-media
-      mountPath: /app/generated_media
-      sizeGB: 1
+    # NOTE: persistent disks are, as far as we know, not available on Render's
+    # free plan (verify in the Render docs) - a blueprint that asks for one on
+    # `plan: free` can be rejected. On free, generated videos/uploads are lost
+    # on every restart/redeploy; chapters whose file is gone can be re-uploaded
+    # (POST /chapters/{id}/reprocess answers 410 in that case). To keep them,
+    # move to a paid plan and uncomment this block (or use object storage):
+    # disk:
+    #   name: alos-media
+    #   mountPath: /app/generated_media
+    #   sizeGB: 1
 
 databases:
   - name: alos-db

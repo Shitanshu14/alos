@@ -13,88 +13,78 @@ generation all run on local Python logic (see "How the AI parts work" below).
 
 ## Project status
 
-Built against `ALOS_Development_Tracker.xlsx`, weeks 1–10 of the backend
-checklist are done and tested. Weeks 11–16 (sharing, classrooms, games,
-quizzes, deployment/hardening) are not started yet.
+All 16 weeks of the backend checklist are implemented. The pytest suite has
+**82 tests** (all passing); `DEPLOYMENT.md` covers putting it online.
+`ALOS_Development_Tracker.xlsx` is the source of truth for status, the
+roadmap and the QA / production-readiness log.
 
-| Week | What it covers | Status |
-|---|---|---|
-| 1 | Project setup, config, DB, error handling, security headers, health check | ✅ Done |
-| 2 | Auth (signup/login/JWT/refresh/reset), ALOS roles, role-based dashboard | ✅ Done |
-| 3 | Chapter model + file upload (PDF/DOCX) + status tracking | ✅ Done |
-| 4 | Text extraction + chapter understanding (local NLP) + content brief | ✅ Done |
-| 5 | Content library schema, tagging, 100+ seed items, admin CRUD | ✅ Done |
-| 6 | Concept matching, best-match selection, customization, quality check | ✅ Done |
-| 7 | No-match detection, content-type decision logic, local content generation | ✅ Done |
-| 8 | Notifications, pipeline status tracking, content access + resume | ✅ Done |
-| 9 | Progress tracking: completed-chapters, continue-learning, history | ✅ Done |
-| 10 | Parent-child profiles + child class selection + progress report | ✅ Done |
-| 11 | Share-link generation, send-to-child, classroom sharing | ✅ Done |
-| 12 | Classroom/session model, homework, auto student access | ✅ Done |
-| 13 | Concept-match + memory game data endpoints | ✅ Done |
-| 14 | Quiz generation, submission/scoring, unlimited retries | ✅ Done |
-| 15 | Bug-fixing, caching, load testing | ✅ Done |
-| 16 | Deployment configs, monitoring/logging, feedback intake | ✅ Done |
+| Week | What it covers |
+|---|---|
+| 1 | Project setup, config, DB, error handling, security headers, health check |
+| 2 | Auth (signup/login/JWT/refresh/reset), ALOS roles, role-based dashboard |
+| 3 | Chapter model + file upload (PDF/DOCX) + status tracking |
+| 4 | Text extraction + chapter understanding (local NLP, English + Hindi) + content brief |
+| 5 | Content library schema, tagging, 100+ seed items, admin CRUD |
+| 6 | Concept matching, best-match selection, customization, quality check |
+| 7 | No-match detection, content-type decision logic, local content generation, **real video rendering** |
+| 8 | Notifications, pipeline status tracking, content access + resume |
+| 9 | Progress tracking: completed-chapters, continue-learning, history |
+| 10 | Parent-child profiles + child class selection + progress report |
+| 11 | Share-link generation, send-to-child, classroom sharing |
+| 12 | Classroom/session model, homework, auto student access |
+| 13 | Concept-match + memory game data endpoints |
+| 14 | Quiz generation, submission/scoring, unlimited retries |
+| 15 | Bug-fixing, caching, load testing |
+| 16 | Deployment configs, monitoring/logging, feedback intake |
 
-**All 16 weeks of the backend checklist are complete and tested** - see
-`tests/` for the full pytest suite (41 tests, all passing) and
-`DEPLOYMENT.md` for how to actually put this online.
+### Production-readiness review (Oct 2026)
 
-A full endpoint-by-endpoint edge-case audit (71 scenarios: invalid input,
-IDOR/cross-user access attempts, boundary values, malformed data) was also
-run across every router - see the tracker spreadsheet's "API Endpoint
-Testing" sheet for the full breakdown. It found and fixed 3 more bugs
-(email case-sensitivity, whitespace-only names, and out-of-range quiz
-answer indices) on top of the security review below.
+A review of the whole project (reading the code, then reproducing suspected
+bugs by running them) found and fixed the following. Every fix has a
+regression test in `tests/test_production_hardening.py`.
 
-**"Testing 2.0"** went a level deeper - concurrency, resource leaks, and
-query performance, not just input validation. Found and fixed 8 more real
-bugs across two rounds (see the tracker's "Testing 2.0 - Deep Bugs" sheet):
-- **Three race conditions**, two causing crashes (quiz generation, 500
-  errors under concurrent access) and one causing **silent data
-  corruption** (duplicate progress rows with no error at all - the most
-  dangerous kind of bug, since nothing points at it happening). All three
-  reproduced with actual concurrent-thread tests, not just reasoning about
-  the code.
-- A resource leak where a failed video render left file handles open
-  indefinitely.
-- A memory leak where the response cache never evicted old entries.
-- Two N+1 query bugs - one of them was **38 SQL queries reduced to 2**
-  (measured directly) in the chapter-matching pipeline, which runs on
-  every single chapter upload.
-- A password-hashing correctness bug: bcrypt silently truncates passwords
-  past 72 bytes, so two different long passwords sharing the same first 72
-  bytes would both work for login - confirmed with a direct hash/verify
-  test, then fixed by rejecting overlong passwords instead of silently
-  weakening them.
+**Video system**
+- Videos narrated and displayed *stage directions* ("Open with a relatable
+  question...", "using a simple on-screen diagram") instead of teaching. The
+  script is now built from the chapter's own sentences (Introduction → What
+  we will learn → one Key-idea scene per concept → Recap), in English or Hindi.
+- Matching handed a chapter **another chapter's video** (subject alone scored
+  above the match threshold; generated videos are saved to the library, so
+  the first video rendered for a subject was served to every chapter of it).
+  A match now needs real concept overlap, and tag matching is word-based.
+- Hindi chapters failed outright ("no meaningful words" - the word pattern was
+  Latin-only; no danda `।` sentence split). Fixed.
+- Rendering held one database transaction open for the whole render (other
+  writers got "database is locked" on SQLite). Planning/rendering now happens
+  before any write; failed runs delete their orphaned files.
+- `moviepy` removed: ffmpeg is called directly (~5x faster per video-second),
+  output is `faststart` mp4 + `.vtt` captions + `.jpg` poster, concurrency is
+  capped (`MAX_CONCURRENT_RENDERS`).
+- The Hindi font test never actually tested Hindi (an English word in the
+  measured region made it pass even with "tofu" boxes). Rewritten.
+- Seeded cartoons (fake CDN links) could be matched; now excluded like videos.
 
-**QA Round 3** dug into product-context-specific bugs (ALOS's real users
-are schools) and found 2 more:
-- Rate limiting was purely IP-based. Since many teachers/students at one
-  school share a single IP behind their network's NAT, one teacher's
-  normal usage could lock out every other teacher at that school -
-  confirmed directly, then fixed by rate-limiting authenticated endpoints
-  per-user instead.
-- **Hindi/Devanagari text rendered as empty boxes** in generated videos -
-  confirmed with pixel-level image analysis, not just a visual glance.
-  Hindi is one of ALOS's core subjects, so this affected every Hindi
-  chapter's video content. Fixed by installing Noto Sans Devanagari and
-  adding script-aware, per-run font selection (since no single font covers
-  both Hindi and English glyphs).
+**Production**
+- Dependencies had known CVEs (pypdf 96, pillow 65, python-multipart 14, ...);
+  all upgraded, `python-jose` replaced by `PyJWT`; `pip-audit` is clean and runs in CI.
+- No `.gitignore` / `.dockerignore` (a `COPY . .` would bake `.env` and the
+  local DB into the image). Added.
+- Behind Render's proxy every user shared one IP for rate limiting
+  (`--proxy-headers` was missing). Fixed in Dockerfile and Procfile.
+- `render.yaml`: open admin signup in production, missing `CORS_ORIGINS`,
+  and a `disk:` block on the free plan. Fixed (see DEPLOYMENT.md).
+- No migrations: Alembic added (`migrations/`), production no longer uses `create_all()`.
+- Failed/interrupted chapters were dead ends: added `POST /chapters/{id}/reprocess`
+  and automatic re-queue of stuck chapters at startup.
+- Uploads: content is verified against the extension (magic bytes) and read in
+  chunks (a huge upload could be fully loaded into memory before the size check).
+- Request IDs (`X-Request-ID`) on every response and log line; `/health`
+  reports ffmpeg/narration; chapter list is paginated; CI workflow added.
 
-**QA Round 3** shifted focus to bugs a real teacher/parent/student would
-actually run into during normal use, written as proper QA test cases
-(not just technical edge cases). Found and fixed 5 more:
-- Homework could be assigned with a due date in the past (already
-  "overdue" the moment students see it).
-- Accidentally double-clicking "Upload" on a slow connection created two
-  identical, confusing chapters, each running its own full pipeline.
-- No way for a teacher to undo a wrong student enrollment or cancel a
-  mistaken homework assignment - added the missing endpoints.
-- Searching the content library for a literal `%` or `_` flooded results
-  with almost the entire library, since these are unescaped SQL wildcards.
-- A parent double/triple-clicking "send to child" cluttered the child's
-  shared-content list with duplicate entries for the same item.
+Still open (tracked in the spreadsheet): email verification is not enforced,
+`/media` URLs are public (unguessable but not signed), `passlib` is
+unmaintained, uploads/videos need object storage on any host without a disk,
+`datetime.utcnow()` deprecation, scanned-PDF OCR.
 
 ---
 
@@ -208,10 +198,12 @@ instead — this was a deliberate choice to avoid API costs/rate limits:
   out as a **script** (panel-by-panel) — no local way to render actual
   artwork, so it's clearly marked `is_generated=True` for an admin to
   illustrate later. **Video is different: it's actually rendered into a real,
-  playable `.mp4`** (see `video_rendering_service.py`) — the script's scenes
-  become narrated text slides via offline text-to-speech (espeak-ng) and
-  ffmpeg, no paid API, no internet call. Simple "narrated slideshow" style,
-  not animation — but a real video, not just a script. If rendering fails for
+  playable `.mp4`** (see `video_rendering_service.py`). The script is a short
+  narrated lesson built from the chapter's own sentences; each scene becomes a
+  designed slide, narrated by offline text-to-speech (espeak-ng) and encoded
+  with ffmpeg - no paid API, no internet call. Each render also writes `.vtt`
+  captions and a `.jpg` poster next to the `.mp4` (same name; use them for
+  `<track>` / `poster=`). "Narrated slideshow" style, not animation. If rendering fails for
   any reason (e.g. a host missing ffmpeg/espeak-ng), it falls back to
   script-only content automatically instead of breaking the pipeline.
 
@@ -264,11 +256,16 @@ app/
   cache.py                        - Week 15: simple in-process TTL cache (see content_library_router.py)
   seed_content_library.py        - Week 5: bulk-inserts 108 starter content items
 
-tests/                            - pytest suite (Week 15) - 37 tests across every week's features
+tests/                            - pytest suite - 82 tests (incl. test_production_hardening.py)
   conftest.py                     - fixtures: isolated test DB, user/auth helper, sample chapter files
   load_test.py                    - Week 15: dependency-free concurrent load test script
 
-Dockerfile                        - Week 16: includes ffmpeg + espeak-ng for real video rendering
+migrations/                       - Alembic: env.py + versions/ (0001 baseline)
+alembic.ini                       - Alembic config (DB URL comes from app settings)
+requirements.txt / requirements-dev.txt - runtime vs test/CI dependencies (pinned, audited)
+.github/workflows/ci.yml          - tests + migration check + pip-audit
+.gitignore / .dockerignore        - keep .env, DBs and uploads out of git and the image
+Dockerfile                        - Week 16: ffmpeg + espeak-ng + fonts, runs migrations, proxy-aware uvicorn
 render.yaml                       - Week 16: Render.com deployment blueprint
 Procfile                          - Week 16: Railway/Heroku-style deploy (no video rendering)
 DEPLOYMENT.md                     - Week 16: full deployment + monitoring + load-testing guide
@@ -300,30 +297,34 @@ Child             - Week 10: a child profile under a parent account (no login of
 ```
 python --version
 ```
-Need Python 3.9+.
+Need Python 3.12 (what the Dockerfile and CI use).
 
 ## Step 1b: System packages for real video rendering (optional but recommended)
 Story/poem/cartoon generation works with just Python packages. To get
 **real rendered .mp4 videos** (not just scripts) for generated video content,
 install these system packages too:
 ```
-apt-get install -y ffmpeg espeak-ng
+apt-get install -y ffmpeg espeak-ng fonts-dejavu-core fonts-noto-core
 ```
 Narration calls the `espeak-ng` command-line tool directly (no `pyttsx3`, no
 `libespeak.so.1` needed). Devanagari text is spoken with espeak-ng's Hindi
-voice and drawn with Noto Sans Devanagari (`fonts-noto`).
+voice and drawn with Noto Sans Devanagari (`fonts-noto-core`; without it Hindi
+slides show empty boxes).
 
 `espeak-ng` is only needed for the *voice*. Without it (e.g. a Mac -
 `brew install espeak-ng` - or a bare hosting tier) the video is still
 rendered, just as a **silent** slideshow, and the match's `quality_notes` say
-so. moviepy bundles its own ffmpeg, so nothing else is needed. The pipeline
+so. ffmpeg itself is optional too: if it isn't installed, the `imageio-ffmpeg`
+package supplies one. The pipeline
 only falls back to a script-only item if the render itself fails.
 
 **Seeded videos are placeholders:** the 108 seed items have fake
 `cdn.alos.app` video URLs. They are never used as a video match - a chapter's
 video is always a real file: a real video from the library (admin-uploaded, or
 rendered for an earlier chapter with the same concepts), otherwise a newly
-rendered one. (Seed *cartoons* are still placeholders with fake image links.)
+rendered one. (Seed *cartoons* are placeholders with fake image links too, so they are
+never matched either - a chapter's cartoon is generated as a script instead.
+Seed stories/poems are template text and can still match.)
 
 ## Step 2: Create a virtual environment (recommended)
 ```
@@ -335,7 +336,8 @@ Activate it:
 
 ## Step 3: Install dependencies
 ```
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # runtime + test dependencies
+# (production installs only requirements.txt)
 ```
 
 ## Step 4: Create the .env file
@@ -353,6 +355,9 @@ otherwise they're just logged to the console (fine for dev/testing).
 ```
 uvicorn app.main:app --reload
 ```
+In development the tables are created automatically on startup; in production
+use migrations (`alembic upgrade head`, see DEPLOYMENT.md).
+
 Open:
 - http://127.0.0.1:8000 → basic check
 - http://127.0.0.1:8000/docs → **interactive API docs** — try every endpoint
@@ -381,16 +386,16 @@ Studies/Hindi. Safe to call more than once; it won't duplicate.
 
 ## Running the tests
 
-There's no separate test suite file yet (Week 15 covers formal testing) — so
-far each week has been verified with inline scripted checks against a fresh
-SQLite DB, covering the full pipeline (signup → upload → processing →
-matching/generation → progress → notifications → parent/child) plus access
-control and edge cases (bad file types, non-owners, missing data, short/edge
-chapter text). If you're continuing this project, a good Week-15 starting
-point is turning those into a real `tests/` folder with pytest.
+```
+pip install -r requirements-dev.txt
+python -m pytest -q -W ignore
+```
+82 tests (~2 minutes: several render real videos). The video/Hindi tests need
+the system packages from Step 1b - without them narration is skipped/silent
+and the Hindi font test skips. Dependency audit: `pip-audit` (also in CI).
 
-## Deployment (once ready)
-Free options: Render.com, Railway.app, or Fly.io — this FastAPI app deploys
+## Deployment
+See `DEPLOYMENT.md`. Free options: Render.com, Railway.app, or Fly.io — this FastAPI app deploys
 directly on any of them. Remember: on free tiers, local disk (chapter
 uploads) is wiped on redeploy/restart — see the `UPLOAD_DIR` note in
 `config.py` for when to switch to cloud storage (S3 etc).

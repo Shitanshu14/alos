@@ -57,16 +57,19 @@ def _concept(concepts: list, index: int, fallback: str) -> str:
     return fallback
 
 
-def generate_content(chapter, content_type: str, key_concepts: list) -> dict:
+def generate_content(chapter, content_type: str, key_concepts: list, analysis: dict = None) -> dict:
     """Generates a new content item's fields for the given type.
     Returns {"title": str, "description": str, "body": str|None, "media_url": str|None}
-    """
+
+    `analysis` (optional) is the dict from ai_service.analyze_chapter_text();
+    the video script uses its per-concept sentences to teach the chapter's
+    ACTUAL content rather than a generic template."""
     if content_type == "story":
         return _generate_story(chapter, key_concepts)
     elif content_type == "poem":
         return _generate_poem(chapter, key_concepts)
     elif content_type == "video":
-        return _generate_video_script(chapter, key_concepts)
+        return _generate_video_script(chapter, key_concepts, analysis)
     elif content_type == "cartoon":
         return _generate_cartoon_script(chapter, key_concepts)
     else:
@@ -116,23 +119,102 @@ def _generate_poem(chapter, concepts: list) -> dict:
     }
 
 
-def _generate_video_script(chapter, concepts: list) -> dict:
-    c1 = _concept(concepts, 0, chapter.chapter_name)
-    c2 = _concept(concepts, 1, "a related idea")
-    c3 = _concept(concepts, 2, "a real-life example")
+# Narration templates. The video is read aloud and shown on slides, so every
+# line must be something a teacher would SAY to students - never a note to the
+# video maker (the first version of this module wrote lines like "Open with a
+# relatable question..." which then got narrated and printed on the slides).
+_EN = {
+    "intro_label": "Introduction",
+    "intro": "Today we are going to learn about {chapter}.",
+    "overview_label": "What we will learn",
+    "overview": "In this lesson we will look at {concepts}.",
+    "concept_label": "Key idea: {concept}",
+    "concept_fallback": "{concept} is one of the important ideas in {chapter}. Look out for what it means and where you can see it around you.",
+    "recap_label": "Recap",
+    "recap": "Let us recap. {chapter} is about {concepts}. Now think about this: can you explain {first} in your own words?",
+    "and": " and ",
+}
+_HI = {
+    "intro_label": "परिचय",
+    "intro": "आज हम {chapter} के बारे में सीखेंगे।",
+    "overview_label": "इस पाठ में",
+    "overview": "इस पाठ में हम {concepts} के बारे में जानेंगे।",
+    "concept_label": "मुख्य विचार: {concept}",
+    "concept_fallback": "{concept}, {chapter} का एक महत्वपूर्ण विचार है। सोचिए, इसका क्या अर्थ है और हम इसे अपने आसपास कहाँ देख सकते हैं।",
+    "recap_label": "दोहराव",
+    "recap": "आइए दोहराएँ। {chapter} में हमने {concepts} के बारे में सीखा। अब सोचिए: क्या आप {first} को अपने शब्दों में समझा सकते हैं?",
+    "and": " और ",
+}
+MAX_CONCEPT_SCENES = 4
 
-    body = (
-        f"VIDEO SCRIPT — {chapter.chapter_name}\n\n"
-        f"Scene 1 (Hook): Open with a relatable question or scenario that leads into {chapter.chapter_name}.\n"
-        f"Scene 2 (Core idea): Explain {c1} step by step, using a simple on-screen diagram.\n"
-        f"Scene 3 (Connection): Show how {c2} relates to {c1}, with a short visual example.\n"
-        f"Scene 4 (Real-world link): Illustrate {c3} so students see why this matters outside class.\n"
-        f"Scene 5 (Recap): Summarize the main points and leave students with one practice question.\n\n"
-        f"[Auto-generated script - record/animate an actual video from this before publishing to students.]"
+
+def _join_concepts(items: list, t: dict) -> str:
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return items[0] if items else ""
+    return ", ".join(items[:-1]) + t["and"] + items[-1]
+
+
+def _label_safe(text: str) -> str:
+    """Scene labels sit inside '(...)' in the script - strip parentheses/newlines."""
+    return re.sub(r"[()\n]", " ", text).strip()
+
+
+def _generate_video_script(chapter, concepts: list, analysis: dict = None) -> dict:
+    """Builds a narrated lesson: Introduction -> what we will learn -> one
+    'Key idea' scene per important concept (using the chapter's own sentence
+    about it) -> Recap with a thinking question. Every scene line is real
+    teaching narration (see the template note above)."""
+    analysis = analysis or {}
+    concept_sentences = analysis.get("concept_sentences") or []
+    opening = (analysis.get("opening_sentence") or "").strip()
+
+    probe = " ".join([chapter.chapter_name] + list(concepts or [])[:3])
+    t = _HI if any("\u0900" <= ch <= "\u097F" for ch in probe) else _EN
+
+    # Concepts to teach, in order: those with a real sentence first, then the rest.
+    taught = [(cs["concept"], cs["sentence"]) for cs in concept_sentences][:MAX_CONCEPT_SCENES]
+    if len(taught) < MAX_CONCEPT_SCENES:
+        have = {c.lower() for c, _ in taught}
+        for c in (concepts or []):
+            if c.lower() not in have and len(taught) < min(MAX_CONCEPT_SCENES, max(len(concepts or []), 1)):
+                taught.append((c, ""))
+                have.add(c.lower())
+    if not taught:
+        taught = [(chapter.chapter_name, "")]
+
+    names = [c for c, _ in taught]
+    scenes = []
+
+    intro = t["intro"].format(chapter=chapter.chapter_name)
+    # Don't read the same sentence twice (intro + first key idea).
+    if opening and opening not in {sent for _, sent in taught}:
+        intro = f"{intro} {opening}"
+    scenes.append((t["intro_label"], intro))
+
+    if len(names) > 1:
+        scenes.append((t["overview_label"], t["overview"].format(concepts=_join_concepts(names, t))))
+
+    for concept, sentence in taught:
+        text = sentence or t["concept_fallback"].format(concept=concept, chapter=chapter.chapter_name)
+        scenes.append((t["concept_label"].format(concept=_label_safe(concept)), text))
+
+    scenes.append((t["recap_label"], t["recap"].format(
+        chapter=chapter.chapter_name, concepts=_join_concepts(names, t), first=names[0])))
+
+    lines = [f"VIDEO SCRIPT — {chapter.chapter_name}", ""]
+    for i, (label, text) in enumerate(scenes, start=1):
+        lines.append(f"Scene {i} ({_label_safe(label)}): {text}")
+    body = "\n".join(lines) + (
+        "\n\n[Auto-generated narrated lesson built from the chapter's own text. "
+        "Review it before sharing with students.]"
     )
     return {
-        "title": f"{chapter.chapter_name} — Explainer Video (Script)",
-        "description": f"An auto-generated video script covering {c1} and {c2} - needs to be produced into an actual video.",
+        "title": f"{chapter.chapter_name} — Explainer Video",
+        "description": (
+            f"An auto-generated lesson video on {chapter.chapter_name}, covering "
+            f"{_join_concepts(names[:3], t)}."
+        ),
         "body": body,
         "media_url": None,
     }

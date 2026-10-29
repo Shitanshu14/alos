@@ -1,0 +1,22 @@
+# Keep secrets, local databases and junk OUT of the image (`COPY . .` copies
+# everything not listed here - previously this included .env and app.db).
+.env
+.env.*
+!.env.example
+.git
+.github
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+*.db
+*.sqlite3
+uploads
+generated_media
+tests
+.DS_Store
+__MACOSX
+*.md
+!README.md

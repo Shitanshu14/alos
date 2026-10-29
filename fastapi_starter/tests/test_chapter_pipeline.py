@@ -3,31 +3,32 @@ from conftest import wait_for_chapter_ready
 
 
 def test_hindi_chapter_name_renders_readable_text_in_video():
-    """Regression test (QA Round 3): Hindi/Devanagari chapter names and
-    content used to render as empty 'tofu' boxes in generated video
-    slides, because the only installed font (DejaVu Sans) has no
-    Devanagari glyphs at all. Confirmed via direct pixel analysis (a
-    rendered Hindi sentence had only 6 unique colors in its text region -
-    real glyphs produce 50+). Fixed by detecting script per text run and
-    picking an appropriate font (Noto Sans Devanagari) for Hindi text,
-    while still rendering English words in the same string correctly too
-    (no single installed font covers both scripts)."""
-    from app.services.video_rendering_service import _make_slide_image
+    """Regression test: Hindi/Devanagari text used to render as empty 'tofu'
+    boxes because DejaVu Sans has no Devanagari glyphs; the fix picks Noto Sans
+    Devanagari per text run.
+
+    This test used to be ineffective: it measured a region that also contained
+    the English word 'Scene', whose glyphs alone pushed the colour count over
+    the threshold - so it passed even when every Hindi character was a tofu box.
+    It now looks ONLY at the Hindi chapter name in the header band (measured:
+    ~220 distinct colours with a real font vs 3 with tofu boxes)."""
+    import pytest
+    from pathlib import Path
+    from app.services import video_rendering_service as v
     import numpy as np
     from PIL import Image
     import tempfile
 
+    if not any(Path(p).exists() for p in v.DEVANAGARI_FONT_CANDIDATES):
+        pytest.skip("No Devanagari font installed here (apt-get install fonts-noto-core)")
+
     with tempfile.TemporaryDirectory() as tmpdir:
         out_path = f"{tmpdir}/slide.png"
-        _make_slide_image(1, "प्रकाश संश्लेषण", "पौधे सूर्य के प्रकाश से भोजन बनाते हैं।", out_path)
+        v._make_slide_image(1, "प्रकाश संश्लेषण", "पौधे सूर्य के प्रकाश से भोजन बनाते हैं।", out_path, total=2)
 
-        img = Image.open(out_path)
-        arr = np.array(img)
-        text_area = arr[0:280, 0:1200]
-        unique_colors = len(np.unique(text_area.reshape(-1, text_area.shape[-1]), axis=0))
-        # Empty tofu boxes produce very few unique colors (~6); real
-        # rendered glyphs (mixing Hindi + the English word "Scene")
-        # produce hundreds due to anti-aliasing.
+        arr = np.array(Image.open(out_path))
+        title_area = arr[0:108, 0:700]          # header band, Hindi chapter name only
+        unique_colors = len(np.unique(title_area.reshape(-1, title_area.shape[-1]), axis=0))
         assert unique_colors > 100, f"Hindi text may not be rendering correctly - only {unique_colors} unique colors found"
 
 

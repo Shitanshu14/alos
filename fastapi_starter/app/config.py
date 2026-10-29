@@ -24,6 +24,9 @@ def _get_list(key: str, default: list) -> list:
     return [item.strip() for item in val.split(",") if item.strip()]
 
 
+_ENV = os.getenv("ENV", "development")  # "development" | "production"
+
+
 class Settings:
     # --- JWT / Auth ---
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-this-secret-key-in-production")
@@ -65,15 +68,17 @@ class Settings:
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
     # --- Signup ---
-    # true (default): anyone can pick ANY role at signup, admin included.
+    # true: anyone can pick ANY role at signup, admin included.
     # false: "admin" is removed from the public signup list - create admins
-    # with `python -m app.create_admin` instead. Recommended for production:
-    # an admin can manage the content library, review feedback and see
-    # every user's chapters.
-    ALLOW_ADMIN_SIGNUP: bool = _get_bool("ALLOW_ADMIN_SIGNUP", True)
+    # with `python -m app.create_admin` instead.
+    # DEFAULT: true in development (handy for local testing), but FALSE when
+    # ENV=production - an open admin signup on a live site lets anyone manage
+    # the content library, read feedback and see every user's chapters. Set
+    # ALLOW_ADMIN_SIGNUP=true explicitly if you really want it in production.
+    ALLOW_ADMIN_SIGNUP: bool = _get_bool("ALLOW_ADMIN_SIGNUP", _ENV != "production")
 
     # --- App ---
-    ENV: str = os.getenv("ENV", "development")  # "development" | "production"
+    ENV: str = _ENV
 
     # --- Chapter file uploads ---
     # NOTE: on Render's free tier this local folder is wiped on every
@@ -87,6 +92,24 @@ class Settings:
     # on every redeploy/restart. Fine for development; switch to cloud
     # storage before real pilot usage.
     GENERATED_MEDIA_DIR: str = os.getenv("GENERATED_MEDIA_DIR", "generated_media")
+
+    # --- Video rendering limits ---
+    # Each render is CPU/RAM heavy (slides + ffmpeg). Only this many run at once;
+    # the rest wait (up to RENDER_QUEUE_TIMEOUT_SECONDS, then fall back to a
+    # script-only video). Keep at 1 on a small/free instance.
+    MAX_CONCURRENT_RENDERS: int = int(os.getenv("MAX_CONCURRENT_RENDERS", "1"))
+    RENDER_QUEUE_TIMEOUT_SECONDS: int = int(os.getenv("RENDER_QUEUE_TIMEOUT_SECONDS", "900"))
+
+    # --- Database schema ---
+    # true: create_all() on startup (dev/tests). false: rely on Alembic
+    # migrations (`alembic upgrade head`). Defaults to false in production.
+    AUTO_CREATE_TABLES: bool = _get_bool("AUTO_CREATE_TABLES", _ENV != "production")
+
+    # --- Background-job recovery ---
+    RECOVER_STUCK_CHAPTERS_ON_STARTUP: bool = _get_bool("RECOVER_STUCK_CHAPTERS_ON_STARTUP", True)
+    # A chapter still "processing" after this many minutes (e.g. the server was
+    # restarted mid-render) is considered stuck and is re-queued on startup.
+    STUCK_CHAPTER_MINUTES: int = int(os.getenv("STUCK_CHAPTER_MINUTES", "15"))
 
 
 settings = Settings()

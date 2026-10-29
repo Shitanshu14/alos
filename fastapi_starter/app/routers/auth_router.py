@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 
 from .. import models, schemas, auth
 from ..database import get_db

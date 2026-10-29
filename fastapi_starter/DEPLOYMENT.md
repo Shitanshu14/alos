@@ -20,8 +20,9 @@ any other Docker-friendly host.
    real emails sent (optional — without them, emails are just logged).
 4. Deploy. First build takes a few minutes (installing ffmpeg etc).
 
-**Free tier caveat:** Render's free tier disks are described as persistent
-in `render.yaml` (`disk:` section) — attach it, or generated videos and
+**Free tier caveat:** persistent disks are, as far as we know, a paid-plan
+feature on Render (verify in their docs) - so `render.yaml` ships with the
+`disk:` block commented out. Without a disk, generated videos and
 uploaded chapters will be lost on every redeploy/restart. Same goes for
 Railway/Fly - check their current volume/disk offering before relying on
 local storage past the free tier's limits.
@@ -55,8 +56,9 @@ skip Docker entirely:
 ## Creating the first admin account
 
 Admin accounts (needed for content library management and feedback review)
-can **not** be created through the public signup API - that's a deliberate
-security fix (see README's Security section). After deploying, create one
+can **not** be created through the public signup API when `ENV=production`
+(the default there; in development signup allows it unless
+`ALLOW_ADMIN_SIGNUP=false`) - a deliberate security fix (see README's Security section). After deploying, create one
 by running this once, on the server / against the production database:
 
 ```
@@ -79,16 +81,43 @@ Copy `.env.example` to `.env` and fill in. At minimum for production:
 - `SMTP_*` - for real email delivery (optional; without it, emails are
   logged instead of sent - fine for an early pilot, not for real users)
 
-## Database
+## Database & migrations
 
-Development defaults to SQLite (zero setup). For production, switch to
-Postgres via `DATABASE_URL` (e.g.
-`postgresql://user:pass@host:5432/alos`) - the app auto-corrects a
-`postgres://` URL to the `postgresql://` scheme SQLAlchemy expects (see
-`database.py`). Tables are created automatically on startup
-(`Base.metadata.create_all`) - there's no separate migration step yet
-(a good Week-15/16 follow-up would be adding Alembic migrations before
-this handles real user data that can't be dropped and recreated).
+Development defaults to SQLite (zero setup). For production use Postgres via
+`DATABASE_URL` (e.g. `postgresql://user:pass@host:5432/alos`) - the app
+auto-corrects a `postgres://` URL (see `database.py`).
+
+**Schema changes are managed with Alembic** (`migrations/`):
+
+- With `ENV=production` the app does NOT call `create_all()` any more (it never
+  ALTERs existing tables, so a model change would silently not reach a live
+  database). The Docker CMD / Procfile run `alembic upgrade head` before
+  starting the server.
+- The baseline migration (`0001`) detects a database that was created by the
+  old `create_all()` and leaves it untouched, so the first deploy of this
+  version onto an existing database is safe; later migrations then apply
+  normally.
+- Changing a model? `alembic revision --autogenerate -m "what changed"`, read
+  the generated file in `migrations/versions/`, commit it. CI runs
+  `alembic upgrade head` + `alembic check` and fails if models and migrations
+  disagree.
+
+## Reverse proxy / client IP
+
+The container starts uvicorn with `--proxy-headers --forwarded-allow-ips='*'`.
+Behind Render (or any load balancer) the TCP peer is the proxy; without this
+every user would share one "IP" and the per-IP login/signup rate limits would
+lock everyone out together. Only use `'*'` when the app is reachable solely
+through the platform's proxy (true on Render/Railway/Fly).
+
+## Video rendering on a small instance
+
+Each render is CPU/RAM heavy. `MAX_CONCURRENT_RENDERS` (default 1) caps how
+many run at once; extra chapters wait. Renders run outside any database
+transaction. If the server restarts mid-render, chapters stuck in
+"processing"/"uploaded" are re-queued on startup (`STUCK_CHAPTER_MINUTES`),
+and a failed chapter can be retried with `POST /chapters/{id}/reprocess`.
+`GET /health` reports whether ffmpeg and narration (espeak-ng) are available.
 
 ## Pilot monitoring & logging
 

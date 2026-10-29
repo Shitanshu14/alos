@@ -1,7 +1,11 @@
+import contextvars
 import logging
+import re
 import traceback
 import os
 import time
+import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -20,18 +24,50 @@ from .routers import (
 )
 from .config import settings
 from .rate_limiter import limiter
+from .services.video_rendering_service import ffmpeg_available, narration_available
 
-# ---------- Logging ----------
+# ---------- Logging (every line carries the request id) ----------
+request_id_ctx: contextvars.ContextVar = contextvars.ContextVar("request_id", default="-")
+
+
+class _RequestIdFilter(logging.Filter):
+    """Adds %(request_id)s to every log record so one user's request can be
+    followed across log lines (and matched to the X-Request-ID response header)."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_ctx.get()
+        return True
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(name)s | req=%(request_id)s | %(message)s",
 )
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_RequestIdFilter())
 logger = logging.getLogger("app")
 
-# Creates all database tables automatically if they don't already exist
-models.Base.metadata.create_all(bind=engine)
+# Table creation:
+#   development/tests -> create_all() on startup (convenient, no setup).
+#   production        -> Alembic migrations (`alembic upgrade head`, run by the
+#                        Docker CMD). create_all() never ALTERs an existing table,
+#                        so a model change would silently not reach a live database.
+if settings.AUTO_CREATE_TABLES:
+    models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="My Backend API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Background jobs live in this process's memory: a restart/redeploy mid-render
+    # used to leave chapters 'processing' forever. Re-queue them.
+    if settings.RECOVER_STUCK_CHAPTERS_ON_STARTUP:
+        try:
+            chapters_router.recover_stuck_chapters()
+        except Exception:
+            logger.exception("Could not recover stuck chapters at startup")
+    yield
+
+
+app = FastAPI(title="ALOS API", lifespan=lifespan)
 
 # Serve generated videos (Week 7 extended) so their media_url is actually
 # viewable. Created here so it exists even before the first video renders.
@@ -132,6 +168,20 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Outermost middleware (added last): assigns/propagates X-Request-ID."""
+    incoming = request.headers.get("x-request-id", "")
+    rid = incoming if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", incoming) else uuid.uuid4().hex[:16]
+    token = request_id_ctx.set(rid)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_ctx.reset(token)
+    response.headers["X-Request-ID"] = rid
+    return response
+
+
 # ---------- CORS ----------
 # Required if the frontend runs on a different domain/port,
 # otherwise the browser will block the requests.
@@ -188,7 +238,13 @@ def health_check():
         db_status = "error"
 
     overall_status = "ok" if db_status == "ok" else "error"
+    # Video capabilities are informational (a host without ffmpeg/espeak-ng still
+    # serves everything else) - they do NOT change the status code.
     return JSONResponse(
         status_code=200 if overall_status == "ok" else 503,
-        content={"status": overall_status, "database": db_status},
+        content={
+            "status": overall_status,
+            "database": db_status,
+            "video": {"ffmpeg": ffmpeg_available(), "narration": narration_available()},
+        },
     )
